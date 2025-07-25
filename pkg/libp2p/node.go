@@ -503,7 +503,11 @@ func (n *GoHushNode) StartCLI() {
 	}
 }
 
-func StartBasic(port int) {
+func StartBasic() {
+	port := 0
+	if len(os.Args) > 1 {
+		fmt.Sscanf(os.Args[1], "%d", &port)
+	}
 	if port == 0 {
 		portBytes := make([]byte, 2)
 		rand.Read(portBytes)
@@ -525,16 +529,53 @@ func StartBasic(port int) {
 	node.StartCLI()
 }
 
-func StartWithNat(port int, config *NodeConfig) {
+func StartWithNat() {
+	port := 0
+	enableUPnP := false
+	enableAutoRelay := false
+	enableHolePunch := false
+	
+	args := os.Args[1:]
+	for i, arg := range args {
+		switch arg {
+		case "--port", "-p":
+			if i+1 < len(args) {
+				fmt.Sscanf(args[i+1], "%d", &port)
+			}
+		case "--upnp":
+			enableUPnP = true
+		case "--relay":
+			enableAutoRelay = true
+		case "--hole-punch":
+			enableHolePunch = true
+		case "--help", "-h":
+			fmt.Printf("Usage: %s [options]\n", os.Args[0])
+			fmt.Printf("Options:\n")
+			fmt.Printf("  --port, -p <port>  Listen port (random if not specified)\n")
+			fmt.Printf("  --upnp             Enable UPnP port mapping\n")
+			fmt.Printf("  --relay            Enable AutoRelay for NAT traversal\n")
+			fmt.Printf("  --hole-punch       Enable hole punching\n")
+			fmt.Printf("  --help, -h         Show this help\n")
+			return
+		}
+	}
+	
 	if port == 0 {
 		portBytes := make([]byte, 2)
 		rand.Read(portBytes)
 		port = 10000 + int(portBytes[0])<<8 + int(portBytes[1])%10000
 	}
 	
-	if config.EnableAutoRelay || config.EnableHolePunch || config.EnableUPnP {
+	config := &NodeConfig{
+		EnableAutoRelay: enableAutoRelay,
+		EnableHolePunch: enableHolePunch,
+		EnableUPnP:      enableUPnP,
+		RelayNodes:      DefaultRelayNodes,
+	}
+	
+	if enableAutoRelay || enableHolePunch || enableUPnP {
 		fmt.Printf("🔧 NAT Traversal enabled: UPnP=%v, AutoRelay=%v, HolePunch=%v\n", 
-			config.EnableUPnP, config.EnableAutoRelay, config.EnableHolePunch)
+			enableUPnP, enableAutoRelay, enableHolePunch)
 	}
 	
 	node, err := NewGoHushNode(port, config)
