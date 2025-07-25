@@ -13,11 +13,14 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	
+	"github.com/libp2p/go-libp2p/core/routing"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
+	discovery "github.com/libp2p/go-libp2p/p2p/discovery/routing"
+	"github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
@@ -29,6 +32,8 @@ const (
 	ProtocolID = "/gohush/chat/1.0.0"
 	// ServiceName for mDNS discovery
 	ServiceName = "gohush-chat"
+	// Rendezvous string for DHT discovery
+	Rendezvous = "gohush-dht-rendezvous"
 )
 
 // GoHushNode represents our P2P messaging node
@@ -39,6 +44,7 @@ type GoHushNode struct {
 	peers    map[peer.ID]bool
 	peersMux sync.RWMutex
 	config   *NodeConfig
+	dht      *dht.IpfsDHT
 }
 
 // NodeConfig holds configuration for NAT traversal
@@ -61,10 +67,14 @@ type discoveryNotifee struct {
 }
 
 func (n *discoveryNotifee) HandlePeerFound(pi peer.AddrInfo) {
-	fmt.Printf("🔍 Discovered peer: %s\n", pi.ID.String())
+	fmt.Printf("🔍 Discovered peer (mDNS): %s\n", pi.ID.String())
 	
 	// Add to our known peers
 	n.node.peersMux.Lock()
+	if _, ok := n.node.peers[pi.ID]; ok {
+		n.node.peersMux.Unlock()
+		return
+	}
 	n.node.peers[pi.ID] = true
 	n.node.peersMux.Unlock()
 	
@@ -80,6 +90,7 @@ func (n *discoveryNotifee) HandlePeerFound(pi peer.AddrInfo) {
 func NewGoHushNode(port int, config *NodeConfig) (*GoHushNode, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	
+	var idht *dht.IpfsDHT
 	opts := []libp2p.Option{
 		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port)),
 		libp2p.RandomIdentity,
@@ -103,6 +114,11 @@ func NewGoHushNode(port int, config *NodeConfig) (*GoHushNode, error) {
 			opts = append(opts, libp2p.EnableHolePunching())
 			fmt.Printf("🔧 Hole punching enabled\n")
 		}
+		opts = append(opts, libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
+			var err error
+			idht, err = dht.New(ctx, h, dht.Mode(dht.ModeServer))
+			return idht, err
+		}))
 	}
 	
 	h, err := libp2p.New(opts...)
@@ -117,6 +133,7 @@ func NewGoHushNode(port int, config *NodeConfig) (*GoHushNode, error) {
 		cancel: cancel,
 		peers:  make(map[peer.ID]bool),
 		config: config,
+		dht:    idht,
 	}
 	
 	h.SetStreamHandler(ProtocolID, node.handleIncomingStream)
@@ -156,12 +173,67 @@ func parseRelayNodes(relayAddrs []string) []peer.AddrInfo {
 }
 
 func (n *GoHushNode) StartDiscovery() error {
+	// Start mDNS discovery
 	disc := mdns.NewMdnsService(n.host, ServiceName, &discoveryNotifee{node: n})
 	if err := disc.Start(); err != nil {
 		return fmt.Errorf("failed to start mDNS discovery: %w", err)
 	}
 	fmt.Printf("🔍 Started mDNS discovery service\n")
+
+	// If DHT is enabled, start DHT-based discovery
+	if n.dht != nil {
+		fmt.Println("🌐 Bootstrapping from public DHT...")
+		if err := n.dht.Bootstrap(n.ctx); err != nil {
+			return fmt.Errorf("failed to bootstrap DHT: %w", err)
+		}
+
+		go n.DiscoverPeers()
+	}
+
 	return nil
+}
+
+func (n *GoHushNode) DiscoverPeers() {
+	routingDiscovery := discovery.NewRoutingDiscovery(n.dht)
+	util.Advertise(n.ctx, routingDiscovery, Rendezvous)
+	fmt.Printf("🔍 Started DHT discovery service, searching for peers...\n")
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-n.ctx.Done():
+			return
+		case <-ticker.C:
+			peerChan, err := routingDiscovery.FindPeers(n.ctx, Rendezvous)
+			if err != nil {
+				fmt.Printf("❌ Failed to find peers: %v\n", err)
+				continue
+			}
+
+			for p := range peerChan {
+				if p.ID == n.host.ID() || len(p.Addrs) == 0 {
+					continue
+				}
+
+				n.peersMux.Lock()
+				if _, ok := n.peers[p.ID]; ok {
+					n.peersMux.Unlock()
+					continue
+				}
+				n.peers[p.ID] = true
+				n.peersMux.Unlock()
+
+				fmt.Printf("🔍 Discovered peer (DHT): %s\n", p.ID.String())
+				if err := n.host.Connect(n.ctx, p); err != nil {
+					fmt.Printf("❌ Failed to connect to peer %s: %v\n", p.ID.String(), err)
+				} else {
+					fmt.Printf("✅ Connected to peer: %s\n", p.ID.String())
+				}
+			}
+		}
+	}
 }
 
 func (n *GoHushNode) ConnectToRelayNodes() {
@@ -263,8 +335,7 @@ func (n *GoHushNode) SendMessage(peerID peer.ID, message string) error {
 	}
 	
 	if n.config != nil {
-		conn := n.host.Network().ConnsToPeer(peerID)
-		if len(conn) > 0 && strings.Contains(conn[0].RemoteMultiaddr().String(), "/p2p-circuit") {
+		if len(n.host.Network().ConnsToPeer(peerID)) > 0 && strings.Contains(n.host.Network().ConnsToPeer(peerID)[0].RemoteMultiaddr().String(), "/p2p-circuit") {
 			fmt.Printf("📤 Sent via relay to %s: %s\n", peerShort, message)
 		} else {
 			fmt.Printf("📤 Sent to %s: %s\n", peerShort, message)
@@ -318,6 +389,7 @@ func (n *GoHushNode) ListPeers() {
 	for peerID := range n.peers {
 		if peerID != n.host.ID() {
 			if n.config != nil {
+				// Check connection type
 				conn := n.host.Network().ConnsToPeer(peerID)
 				connType := "direct"
 				if len(conn) > 0 && strings.Contains(conn[0].RemoteMultiaddr().String(), "/p2p-circuit") {
