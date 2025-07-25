@@ -6,8 +6,6 @@ package libp2p
 import (
 	"bufio"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -18,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/baderanaas/GoHush/pkg/crypto"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-pubsub"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -463,7 +462,7 @@ func (n *DecentralizedNode) announcePresence() {
 
 // handlePubSubMessages receives and processes messages from a subscribed topic
 func (n *DecentralizedNode) handlePubSubMessages(sub *pubsub.Subscription, topic string) {
-	key := deriveKeyFromTopic(topic)
+	key := crypto.KeyFromTopic(topic)
 	for {
 		msg, err := sub.Next(n.ctx)
 		if err != nil {
@@ -488,11 +487,13 @@ func (n *DecentralizedNode) handlePubSubMessages(sub *pubsub.Subscription, topic
 		n.messageHistory[chatMsg.ID] = time.Now()
 		n.historyMux.Unlock()
 
-		plaintext, err := decrypt(chatMsg.Content, key)
+		log.Printf("RECEIVING (encrypted pubsub): %s\n", chatMsg.Content)
+		plaintext, err := crypto.Decrypt(chatMsg.Content, key)
 		if err != nil {
 			log.Printf("⚠️ Failed to decrypt message on topic '%s' from %s", topic, chatMsg.From[:12])
 			continue
 		}
+		log.Printf("DECRYPTED (pubsub): %s\n", string(plaintext))
 
 		fromShort := chatMsg.From
 		if len(fromShort) > 12 {
@@ -527,13 +528,15 @@ func (n *DecentralizedNode) handlePrivateChatStream(s network.Stream) {
 		log.Printf("Failed to decode sender peer ID: %v", err)
 		return
 	}
-	key := deriveKeyFromPeerIDs(n.host.ID(), remotePeerID)
+	key := crypto.KeyFromPeers(n.host.ID(), remotePeerID)
 
-	plaintext, err := decrypt(msg.Content, key)
+	log.Printf("RECEIVING (encrypted private): %s\n", msg.Content)
+	plaintext, err := crypto.Decrypt(msg.Content, key)
 	if err != nil {
 		log.Printf("⚠️ Failed to decrypt private message from %s", msg.From[:12])
 		return
 	}
+	log.Printf("DECRYPTED (private): %s\n", string(plaintext))
 
 	fromShort := msg.From
 	if len(fromShort) > 12 {
@@ -552,8 +555,8 @@ func (n *DecentralizedNode) SendMessage(content, topic string) error {
 		return fmt.Errorf("not joined to topic: %s", topic)
 	}
 
-	key := deriveKeyFromTopic(topic)
-	encryptedContent, err := encrypt([]byte(content), key)
+	key := crypto.KeyFromTopic(topic)
+	encryptedContent, err := crypto.Encrypt([]byte(content), key)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt message: %w", err)
 	}
@@ -581,8 +584,8 @@ func (n *DecentralizedNode) SendMessage(content, topic string) error {
 
 // SendPrivateMessage sends an encrypted message directly to a peer
 func (n *DecentralizedNode) SendPrivateMessage(content string, to peer.ID) error {
-	key := deriveKeyFromPeerIDs(n.host.ID(), to)
-	encryptedContent, err := encrypt([]byte(content), key)
+	key := crypto.KeyFromPeers(n.host.ID(), to)
+	encryptedContent, err := crypto.Encrypt([]byte(content), key)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt private message: %w", err)
 	}
@@ -666,62 +669,6 @@ func generateMessageID(content, from string, timestamp time.Time) string {
 	data := fmt.Sprintf("%s-%s-%d", content, from, timestamp.UnixNano())
 	hash := sha256.Sum256([]byte(data))
 	return base64.URLEncoding.EncodeToString(hash[:])
-}
-
-func deriveKeyFromTopic(topic string) []byte {
-	hash := sha256.Sum256([]byte(topic))
-	return hash[:] // Use the 32-byte hash as the AES-256 key
-}
-
-// deriveKeyFromPeerIDs creates a deterministic shared secret for private messaging
-func deriveKeyFromPeerIDs(p1, p2 peer.ID) []byte {
-	// Sort peer IDs to ensure both parties derive the same key
-	id1, _ := p1.Marshal()
-	id2, _ := p2.Marshal()
-	var combined []byte
-	if strings.Compare(string(id1), string(id2)) < 0 {
-		combined = append(id1, id2...)
-	} else {
-		combined = append(id2, id1...)
-	}
-	hash := sha256.Sum256(combined)
-	return hash[:]
-}
-
-func encrypt(plaintext []byte, key []byte) (string, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	// For simplicity, we use a zero nonce. In a real-world app, a random nonce is better.
-	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
-}
-
-func decrypt(ciphertextB64 string, key []byte) ([]byte, error) {
-	ciphertext, err := base64.StdEncoding.DecodeString(ciphertextB64)
-	if err != nil {
-		return nil, err
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonceSize := gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
-		return nil, fmt.Errorf("ciphertext too short")
-	}
-	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
 func (n *DecentralizedNode) cleanupMessageHistory() {
