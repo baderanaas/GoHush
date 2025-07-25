@@ -18,7 +18,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/routing"
-	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	discovery "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	"github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
@@ -30,8 +29,6 @@ import (
 const (
 	// ProtocolID for our messaging service
 	ProtocolID = "/gohush/chat/1.0.0"
-	// ServiceName for mDNS discovery
-	ServiceName = "gohush-chat"
 	// Rendezvous string for DHT discovery
 	Rendezvous = "gohush-dht-rendezvous"
 )
@@ -61,31 +58,6 @@ var DefaultRelayNodes = []string{
 	"/dnsaddr/relay.libp2p.io/p2p/12D3KooWDpJ7At3VoHAPQCjKJC8RB1hGJJt6eFCrTdWhjLU7mGYd",
 }
 
-// discoveryNotifee handles peer discovery events
-type discoveryNotifee struct {
-	node *GoHushNode
-}
-
-func (n *discoveryNotifee) HandlePeerFound(pi peer.AddrInfo) {
-	fmt.Printf("🔍 Discovered peer (mDNS): %s\n", pi.ID.String())
-	
-	// Add to our known peers
-	n.node.peersMux.Lock()
-	if _, ok := n.node.peers[pi.ID]; ok {
-		n.node.peersMux.Unlock()
-		return
-	}
-	n.node.peers[pi.ID] = true
-	n.node.peersMux.Unlock()
-	
-	// Connect to the discovered peer
-	if err := n.node.host.Connect(n.node.ctx, pi); err != nil {
-		fmt.Printf("❌ Failed to connect to peer %s: %v\n", pi.ID.String(), err)
-	} else {
-		fmt.Printf("✅ Connected to peer: %s\n", pi.ID.String())
-	}
-}
-
 // NewGoHushNode creates a new P2P messaging node.
 func NewGoHushNode(port int, config *NodeConfig) (*GoHushNode, error) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -94,6 +66,11 @@ func NewGoHushNode(port int, config *NodeConfig) (*GoHushNode, error) {
 	opts := []libp2p.Option{
 		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port)),
 		libp2p.RandomIdentity,
+		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
+			var err error
+			idht, err = dht.New(ctx, h, dht.Mode(dht.ModeServer))
+			return idht, err
+		}),
 	}
 
 	if config != nil {
@@ -114,11 +91,6 @@ func NewGoHushNode(port int, config *NodeConfig) (*GoHushNode, error) {
 			opts = append(opts, libp2p.EnableHolePunching())
 			fmt.Printf("🔧 Hole punching enabled\n")
 		}
-		opts = append(opts, libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
-			var err error
-			idht, err = dht.New(ctx, h, dht.Mode(dht.ModeServer))
-			return idht, err
-		}))
 	}
 	
 	h, err := libp2p.New(opts...)
@@ -173,22 +145,12 @@ func parseRelayNodes(relayAddrs []string) []peer.AddrInfo {
 }
 
 func (n *GoHushNode) StartDiscovery() error {
-	// Start mDNS discovery
-	disc := mdns.NewMdnsService(n.host, ServiceName, &discoveryNotifee{node: n})
-	if err := disc.Start(); err != nil {
-		return fmt.Errorf("failed to start mDNS discovery: %w", err)
+	fmt.Println("🌐 Bootstrapping from public DHT...")
+	if err := n.dht.Bootstrap(n.ctx); err != nil {
+		return fmt.Errorf("failed to bootstrap DHT: %w", err)
 	}
-	fmt.Printf("🔍 Started mDNS discovery service\n")
 
-	// If DHT is enabled, start DHT-based discovery
-	if n.dht != nil {
-		fmt.Println("🌐 Bootstrapping from public DHT...")
-		if err := n.dht.Bootstrap(n.ctx); err != nil {
-			return fmt.Errorf("failed to bootstrap DHT: %w", err)
-		}
-
-		go n.DiscoverPeers()
-	}
+	go n.DiscoverPeers()
 
 	return nil
 }
@@ -197,6 +159,7 @@ func (n *GoHushNode) DiscoverPeers() {
 	routingDiscovery := discovery.NewRoutingDiscovery(n.dht)
 	util.Advertise(n.ctx, routingDiscovery, Rendezvous)
 	fmt.Printf("🔍 Started DHT discovery service, searching for peers...\n")
+
 
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -529,53 +492,16 @@ func StartBasic() {
 	node.StartCLI()
 }
 
-func StartWithNat() {
-	port := 0
-	enableUPnP := false
-	enableAutoRelay := false
-	enableHolePunch := false
-	
-	args := os.Args[1:]
-	for i, arg := range args {
-		switch arg {
-		case "--port", "-p":
-			if i+1 < len(args) {
-				fmt.Sscanf(args[i+1], "%d", &port)
-			}
-		case "--upnp":
-			enableUPnP = true
-		case "--relay":
-			enableAutoRelay = true
-		case "--hole-punch":
-			enableHolePunch = true
-		case "--help", "-h":
-			fmt.Printf("Usage: %s [options]\n", os.Args[0])
-			fmt.Printf("Options:\n")
-			fmt.Printf("  --port, -p <port>  Listen port (random if not specified)\n")
-			fmt.Printf("  --upnp             Enable UPnP port mapping\n")
-			fmt.Printf("  --relay            Enable AutoRelay for NAT traversal\n")
-			fmt.Printf("  --hole-punch       Enable hole punching\n")
-			fmt.Printf("  --help, -h         Show this help\n")
-			return
-		}
-	}
-	
+func StartWithNat(port int, config *NodeConfig) {
 	if port == 0 {
 		portBytes := make([]byte, 2)
 		rand.Read(portBytes)
 		port = 10000 + int(portBytes[0])<<8 + int(portBytes[1])%10000
 	}
 	
-	config := &NodeConfig{
-		EnableAutoRelay: enableAutoRelay,
-		EnableHolePunch: enableHolePunch,
-		EnableUPnP:      enableUPnP,
-		RelayNodes:      DefaultRelayNodes,
-	}
-	
-	if enableAutoRelay || enableHolePunch || enableUPnP {
+	if config.EnableAutoRelay || config.EnableHolePunch || config.EnableUPnP {
 		fmt.Printf("🔧 NAT Traversal enabled: UPnP=%v, AutoRelay=%v, HolePunch=%v\n", 
-			enableUPnP, enableAutoRelay, enableHolePunch)
+			config.EnableUPnP, config.EnableAutoRelay, config.EnableHolePunch)
 	}
 	
 	node, err := NewGoHushNode(port, config)
