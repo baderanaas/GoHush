@@ -18,10 +18,13 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 	fmt.Printf("\n✅ Fully Decentralized & Encrypted P2P Chat Started!\n")
 	fmt.Printf("Commands:\n")
 	fmt.Printf("  /join <topic>              - Join an encrypted chat topic\n")
+	fmt.Printf("  /leave <topic>             - Leave a chat topic\n")
 	fmt.Printf("  /history <topic|peer> [n]  - Show the last [n] messages (default 50)\n")
 	fmt.Printf("  /topics                    - Show joined topics\n")
 	fmt.Printf("  /peers                     - List network peers and their full IDs\n")
 	fmt.Printf("  /connect <addr>            - Connect to a specific peer\n")
+	fmt.Printf("  /disconnect <peerID>       - Disconnect from a specific peer\n")
+	fmt.Printf("  /disconnect-all            - Disconnect from all peers\n")
 	fmt.Printf("  /msg <topic> <msg>         - Send a message to a specific topic\n")
 	fmt.Printf("  /private <peerID> <msg>    - Send a private message to a peer\n")
 	fmt.Printf("  /quit                      - Exit\n")
@@ -60,6 +63,13 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 					fmt.Printf("[%s] %s: %s\n", msg.Timestamp.Format("15:04"), fromShort, msg.Content)
 				}
 				fmt.Println("--- End of history ---")
+			}
+		case strings.HasPrefix(input, "/leave "):
+			topic := strings.TrimSpace(input[7:])
+			if err := n.LeaveTopic(topic); err != nil {
+				log.Printf("❌ Failed to leave topic: %v\n", err)
+			} else {
+				fmt.Printf("✅ Left topic: %s\n", topic)
 			}
 		case strings.HasPrefix(input, "/history "):
 			parts := strings.Fields(input)
@@ -117,6 +127,21 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 			} else {
 				fmt.Printf("✅ Connected successfully\n")
 			}
+		case strings.HasPrefix(input, "/disconnect "):
+			peerIDStr := strings.TrimSpace(input[12:])
+			peerID, err := peer.Decode(peerIDStr)
+			if err != nil {
+				fmt.Printf("❌ Invalid peer ID: %v\n", err)
+				continue
+			}
+			if err := n.DisconnectFromPeer(peerID); err != nil {
+				log.Printf("❌ Failed to disconnect from peer: %v\n", err)
+			} else {
+				fmt.Printf("✅ Disconnected from peer: %s\n", peerIDStr)
+			}
+		case input == "/disconnect-all":
+			n.DisconnectFromAllPeers()
+			fmt.Println("✅ Disconnected from all peers.")
 
 		case strings.HasPrefix(input, "/msg "):
 			parts := strings.SplitN(input[5:], " ", 2)
