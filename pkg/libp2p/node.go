@@ -14,17 +14,17 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/routing"
-	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 )
 
 // DecentralizedNode - Fully autonomous P2P node
 type DecentralizedNode struct {
-	host   host.Host
+	host    host.Host
 	ctx    context.Context
 	cancel context.CancelFunc
 	dht    *dht.IpfsDHT
 	pubsub *pubsub.PubSub
+	hushDir string
 
 	// Peer management
 	peers    map[peer.ID]*PeerInfo
@@ -44,8 +44,14 @@ type DecentralizedNode struct {
 }
 
 // NewDecentralizedNode creates a fully decentralized node
-func NewDecentralizedNode(port int) (*DecentralizedNode, error) {
+func NewDecentralizedNode(port int, baseDir string) (*DecentralizedNode, error) {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	hushDir, err := getHushDir(baseDir)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to get hush directory: %w", err)
+	}
 
 	var idht *dht.IpfsDHT
 
@@ -65,14 +71,20 @@ func NewDecentralizedNode(port int) (*DecentralizedNode, error) {
 		staticRelays = append(staticRelays, *pi)
 	}
 
+	privKey, err := LoadIdentity(hushDir)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to load or generate identity: %w", err)
+	}
+
 	opts := []libp2p.Option{
 		libp2p.ListenAddrStrings(
 			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
 			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic", port+1),
 		),
-		libp2p.RandomIdentity,
+		libp2p.Identity(privKey),
 		libp2p.ConnectionManager(cm),
-		libp2p.EnableAutoRelay(autorelay.WithStaticRelays(staticRelays)),
+		libp2p.EnableAutoRelayWithStaticRelays(staticRelays),
 		libp2p.EnableHolePunching(),
 		libp2p.NATPortMap(),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
@@ -100,6 +112,7 @@ func NewDecentralizedNode(port int) (*DecentralizedNode, error) {
 		cancel:         cancel,
 		dht:            idht,
 		pubsub:         ps,
+		hushDir:        hushDir,
 		peers:          make(map[peer.ID]*PeerInfo),
 		joinedTopics:   make(map[string]*pubsub.Topic),
 		messageHistory: make(map[string]time.Time),

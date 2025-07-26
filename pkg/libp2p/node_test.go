@@ -9,7 +9,8 @@ import (
 )
 
 func TestNewDecentralizedNode(t *testing.T) {
-	node, err := NewDecentralizedNode(0)
+	dir := newTestDir(t)
+	node, err := NewDecentralizedNode(0, dir)
 	require.NoError(t, err)
 	require.NotNil(t, node)
 	defer func() { require.NoError(t, node.Close()) }()
@@ -21,11 +22,13 @@ func TestNewDecentralizedNode(t *testing.T) {
 }
 
 func TestNodeToNodeConnection(t *testing.T) {
-	node1, err := NewDecentralizedNode(0)
+	dir1 := newTestDir(t)
+	node1, err := NewDecentralizedNode(0, dir1)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, node1.Close()) }()
 
-	node2, err := NewDecentralizedNode(0)
+	dir2 := newTestDir(t)
+	node2, err := NewDecentralizedNode(0, dir2)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, node2.Close()) }()
 
@@ -53,3 +56,4 @@ func TestNodeToNodeConnection(t *testing.T) {
 	}
 	require.True(t, found, "node1 should be connected to node2")
 }
+

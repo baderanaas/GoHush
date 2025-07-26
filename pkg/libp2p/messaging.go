@@ -101,6 +101,18 @@ func (n *DecentralizedNode) handlePubSubMessages(sub *pubsub.Subscription, topic
 			continue
 		}
 
+		// Log the plaintext message for local history
+		logMsg := &ChatMessage{
+			ID:        chatMsg.ID,
+			From:      chatMsg.From,
+			Content:   string(plaintext),
+			Topic:     topic,
+			Timestamp: chatMsg.Timestamp,
+		}
+		if err := LogMessage(topic, logMsg, n.hushDir); err != nil {
+			log.Printf("⚠️ Failed to log received message: %v", err)
+		}
+
 		fromShort := chatMsg.From
 		if len(fromShort) > 12 {
 			fromShort = fromShort[:12]
@@ -140,13 +152,23 @@ func (n *DecentralizedNode) handlePrivateChatStream(s network.Stream) {
 	}
 	key := crypto.KeyFromPeers(n.host.ID(), remotePeerID)
 
-	log.Printf("RECEIVING (encrypted private): %s\n", msg.Content)
 	plaintext, err := crypto.Decrypt(msg.Content, key)
 	if err != nil {
 		log.Printf("⚠️ Failed to decrypt private message from %s", msg.From[:12])
 		return
 	}
-	log.Printf("DECRYPTED (private): %s\n", string(plaintext))
+
+	// Log the plaintext message for local history
+	logMsg := &ChatMessage{
+		ID:        msg.ID,
+		From:      msg.From,
+		Content:   string(plaintext),
+		Topic:     remotePeerID.String(),
+		Timestamp: msg.Timestamp,
+	}
+	if err := LogMessage(remotePeerID.String(), logMsg, n.hushDir); err != nil {
+		log.Printf("⚠️ Failed to log received private message: %v", err)
+	}
 
 	fromShort := msg.From
 	if len(fromShort) > 12 {
@@ -189,6 +211,18 @@ func (n *DecentralizedNode) SendMessage(content, topic string) error {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
+	// Log the plaintext message for local history
+	logMsg := &ChatMessage{
+		ID:        msgID,
+		From:      n.host.ID().String(),
+		Content:   content, // Log plaintext
+		Topic:     topic,
+		Timestamp: msg.Timestamp,
+	}
+	if err := LogMessage(topic, logMsg, n.hushDir); err != nil {
+		log.Printf("⚠️ Failed to log sent message: %v", err)
+	}
+
 	return pubsubTopic.Publish(n.ctx, data)
 }
 
@@ -223,6 +257,18 @@ func (n *DecentralizedNode) SendPrivateMessage(content string, to peer.ID) error
 	encoder := json.NewEncoder(s)
 	if err := encoder.Encode(msg); err != nil {
 		return fmt.Errorf("failed to send private message: %w", err)
+	}
+
+	// Log the plaintext message for local history
+	logMsg := &ChatMessage{
+		ID:        msgID,
+		From:      n.host.ID().String(),
+		Content:   content, // Log plaintext
+		Topic:     to.String(),
+		Timestamp: msg.Timestamp,
+	}
+	if err := LogMessage(to.String(), logMsg, n.hushDir); err != nil {
+		log.Printf("⚠️ Failed to log sent private message: %v", err)
 	}
 
 	return nil

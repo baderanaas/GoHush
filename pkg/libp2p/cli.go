@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 	fmt.Printf("\n✅ Fully Decentralized & Encrypted P2P Chat Started!\n")
 	fmt.Printf("Commands:\n")
 	fmt.Printf("  /join <topic>              - Join an encrypted chat topic\n")
+	fmt.Printf("  /history <topic|peer> [n]  - Show the last [n] messages (default 50)\n")
 	fmt.Printf("  /topics                    - Show joined topics\n")
 	fmt.Printf("  /peers                     - List network peers and their full IDs\n")
 	fmt.Printf("  /connect <addr>            - Connect to a specific peer\n")
@@ -43,7 +45,54 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 			topic := strings.TrimSpace(input[6:])
 			if err := n.JoinTopic(topic); err != nil {
 				log.Printf("❌ Failed to join topic: %v\n", err)
+			} else {
+				// Load and display recent messages
+				messages, err := LoadRecentMessages(topic, 20, n.hushDir)
+				if err != nil {
+					log.Printf("⚠️ Could not load message history: %v", err)
+				}
+				fmt.Printf("--- History for %s ---\n", topic)
+				for _, msg := range messages {
+					fromShort := msg.From
+					if len(fromShort) > 12 {
+						fromShort = fromShort[:12]
+					}
+					fmt.Printf("[%s] %s: %s\n", msg.Timestamp.Format("15:04"), fromShort, msg.Content)
+				}
+				fmt.Println("--- End of history ---")
 			}
+		case strings.HasPrefix(input, "/history "):
+			parts := strings.Fields(input)
+			if len(parts) < 2 {
+				fmt.Println("Usage: /history <topic_or_peer_id> [count]")
+				continue
+			}
+			logID := parts[1]
+			count := 50 // Default message count
+			if len(parts) > 2 {
+				var err error
+				count, err = strconv.Atoi(parts[2])
+				if err != nil {
+					fmt.Println("Invalid count, must be a number.")
+					continue
+				}
+			}
+
+			messages, err := LoadRecentMessages(logID, count, n.hushDir)
+			if err != nil {
+				log.Printf("⚠️ Could not load message history for %s: %v", logID, err)
+				continue
+			}
+
+			fmt.Printf("--- History for %s (last %d messages) ---\n", logID, len(messages))
+			for _, msg := range messages {
+				fromShort := msg.From
+				if len(fromShort) > 12 {
+					fromShort = fromShort[:12]
+				}
+				fmt.Printf("[%s] %s: %s\n", msg.Timestamp.Format("15:04"), fromShort, msg.Content)
+			}
+			fmt.Println("--- End of history ---")
 
 		case input == "/topics":
 			n.joinedTopicsMux.RLock()
@@ -56,6 +105,7 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 				}
 			}
 			n.joinedTopicsMux.RUnlock()
+
 
 		case input == "/peers":
 			n.ListPeers()
@@ -119,7 +169,8 @@ func StartDecentralized(port int) {
 		port = 8000 + int(time.Now().Unix()%1000)
 	}
 
-	node, err := NewDecentralizedNode(port)
+	// Pass an empty string to use the default user directory
+	node, err := NewDecentralizedNode(port, "")
 	if err != nil {
 		log.Fatalf("❌ Failed to create decentralized node: %v", err)
 	}

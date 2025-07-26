@@ -13,11 +13,13 @@ import (
 )
 
 func TestJoinTopicAndSendMessage(t *testing.T) {
-	node1, err := NewDecentralizedNode(0)
+	dir1 := newTestDir(t)
+	node1, err := NewDecentralizedNode(0, dir1)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, node1.Close()) }()
 
-	node2, err := NewDecentralizedNode(0)
+	dir2 := newTestDir(t)
+	node2, err := NewDecentralizedNode(0, dir2)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, node2.Close()) }()
 
@@ -71,11 +73,13 @@ func TestJoinTopicAndSendMessage(t *testing.T) {
 }
 
 func TestSendPrivateMessage(t *testing.T) {
-	node1, err := NewDecentralizedNode(0)
+	dir1 := newTestDir(t)
+	node1, err := NewDecentralizedNode(0, dir1)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, node1.Close()) }()
 
-	node2, err := NewDecentralizedNode(0)
+	dir2 := newTestDir(t)
+	node2, err := NewDecentralizedNode(0, dir2)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, node2.Close()) }()
 
@@ -111,3 +115,4 @@ func TestSendPrivateMessage(t *testing.T) {
 		t.Fatal("timed out waiting for private message")
 	}
 }
+
