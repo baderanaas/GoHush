@@ -188,14 +188,14 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 }
 
 // StartDecentralized is the main entry point for the decentralized mode.
-func StartDecentralized(port int) {
+func StartDecentralized(port int, relayAddr string) {
 	if port == 0 {
 		// Use a random port to allow multiple nodes on the same machine
 		port = 8000 + int(time.Now().Unix()%1000)
 	}
 
 	// Pass an empty string to use the default user directory
-	node, err := NewDecentralizedNode(port, "")
+	node, err := NewDecentralizedNode(port, "", relayAddr)
 	if err != nil {
 		log.Fatalf("❌ Failed to create decentralized node: %v", err)
 	}

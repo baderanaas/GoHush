@@ -14,6 +14,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/routing"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
+	"github.com/multiformats/go-multiaddr"
 )
 
 // DecentralizedNode - Fully autonomous P2P node
@@ -43,7 +44,7 @@ type DecentralizedNode struct {
 }
 
 // NewDecentralizedNode creates a fully decentralized node
-func NewDecentralizedNode(port int, baseDir string) (*DecentralizedNode, error) {
+func NewDecentralizedNode(port int, baseDir string, relayAddr string) (*DecentralizedNode, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	hushDir, err := getHushDir(baseDir)
@@ -61,6 +62,14 @@ func NewDecentralizedNode(port int, baseDir string) (*DecentralizedNode, error) 
 	}
 
 	var staticRelays []peer.AddrInfo
+	if relayAddr != "" {
+		pi, err := peer.AddrInfoFromP2pAddr(multiaddr.StringCast(relayAddr))
+		if err != nil {
+			log.Printf("Failed to parse custom relay peer: %v", err)
+		} else {
+			staticRelays = append(staticRelays, *pi)
+		}
+	}
 	for _, addr := range dht.DefaultBootstrapPeers {
 		pi, err := peer.AddrInfoFromP2pAddr(addr)
 		if err != nil {

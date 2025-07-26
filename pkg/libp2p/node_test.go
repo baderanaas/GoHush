@@ -10,7 +10,7 @@ import (
 
 func TestNewDecentralizedNode(t *testing.T) {
 	dir := newTestDir(t)
-	node, err := NewDecentralizedNode(0, dir)
+	node, err := NewDecentralizedNode(0, dir, "")
 	require.NoError(t, err)
 	require.NotNil(t, node)
 	defer func() { require.NoError(t, node.Close()) }()
@@ -23,12 +23,12 @@ func TestNewDecentralizedNode(t *testing.T) {
 
 func TestNodeToNodeConnection(t *testing.T) {
 	dir1 := newTestDir(t)
-	node1, err := NewDecentralizedNode(0, dir1)
+	node1, err := NewDecentralizedNode(0, dir1, "")
 	require.NoError(t, err)
 	defer func() { require.NoError(t, node1.Close()) }()
 
 	dir2 := newTestDir(t)
-	node2, err := NewDecentralizedNode(0, dir2)
+	node2, err := NewDecentralizedNode(0, dir2, "")
 	require.NoError(t, err)
 	defer func() { require.NoError(t, node2.Close()) }()
 
