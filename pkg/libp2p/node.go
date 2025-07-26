@@ -85,6 +85,8 @@ func NewDecentralizedNode(port int, baseDir string) (*DecentralizedNode, error) 
 		libp2p.ConnectionManager(cm),
 		libp2p.EnableAutoRelayWithStaticRelays(staticRelays),
 		libp2p.EnableHolePunching(),
+		libp2p.EnableNATService(),
+		libp2p.EnableRelayService(),
 		libp2p.NATPortMap(),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			var err error

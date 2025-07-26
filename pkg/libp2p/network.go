@@ -73,7 +73,7 @@ func (n *DecentralizedNode) connectToPeer(addrStr string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(n.ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(n.ctx, 30*time.Second)
 	defer cancel()
 	if err := n.host.Connect(ctx, *peerInfo); err != nil {
 		return err
