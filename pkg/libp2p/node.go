@@ -1,4 +1,3 @@
-
 package libp2p
 
 import (
@@ -9,22 +8,24 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p-pubsub"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/routing"
-	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
+	"github.com/multiformats/go-multiaddr"
 )
 
 // DecentralizedNode - Fully autonomous P2P node
 type DecentralizedNode struct {
-	host   host.Host
-	ctx    context.Context
-	cancel context.CancelFunc
-	dht    *dht.IpfsDHT
-	pubsub *pubsub.PubSub
+	host    host.Host
+	ctx     context.Context
+	cancel  context.CancelFunc
+	dht     *dht.IpfsDHT
+	pubsub  *pubsub.PubSub
+	hushDir string
 
 	// Peer management
 	peers    map[peer.ID]*PeerInfo
@@ -44,8 +45,14 @@ type DecentralizedNode struct {
 }
 
 // NewDecentralizedNode creates a fully decentralized node
-func NewDecentralizedNode(port int) (*DecentralizedNode, error) {
+func NewDecentralizedNode(port int, baseDir string, relayAddr string) (*DecentralizedNode, error) {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	hushDir, err := getHushDir(baseDir)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to get hush directory: %w", err)
+	}
 
 	var idht *dht.IpfsDHT
 
@@ -56,6 +63,14 @@ func NewDecentralizedNode(port int) (*DecentralizedNode, error) {
 	}
 
 	var staticRelays []peer.AddrInfo
+	if relayAddr != "" {
+		pi, err := peer.AddrInfoFromP2pAddr(multiaddr.StringCast(relayAddr))
+		if err != nil {
+			log.Printf("Failed to parse custom relay peer: %v", err)
+		} else {
+			staticRelays = append(staticRelays, *pi)
+		}
+	}
 	for _, addr := range dht.DefaultBootstrapPeers {
 		pi, err := peer.AddrInfoFromP2pAddr(addr)
 		if err != nil {
@@ -65,15 +80,23 @@ func NewDecentralizedNode(port int) (*DecentralizedNode, error) {
 		staticRelays = append(staticRelays, *pi)
 	}
 
+	privKey, err := LoadIdentity(hushDir)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to load or generate identity: %w", err)
+	}
+
 	opts := []libp2p.Option{
 		libp2p.ListenAddrStrings(
 			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port),
 			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic", port+1),
 		),
-		libp2p.RandomIdentity,
+		libp2p.Identity(privKey),
 		libp2p.ConnectionManager(cm),
-		libp2p.EnableAutoRelay(autorelay.WithStaticRelays(staticRelays)),
+		libp2p.ResourceManager(&network.NullResourceManager{}),
+		libp2p.EnableRelay(),
 		libp2p.EnableHolePunching(),
+		libp2p.EnableNATService(),
 		libp2p.NATPortMap(),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			var err error
@@ -100,6 +123,7 @@ func NewDecentralizedNode(port int) (*DecentralizedNode, error) {
 		cancel:         cancel,
 		dht:            idht,
 		pubsub:         ps,
+		hushDir:        hushDir,
 		peers:          make(map[peer.ID]*PeerInfo),
 		joinedTopics:   make(map[string]*pubsub.Topic),
 		messageHistory: make(map[string]time.Time),
@@ -127,8 +151,13 @@ func (n *DecentralizedNode) Bootstrap() error {
 	fmt.Println("⏳ Starting decentralized bootstrap...")
 
 	publicDHT := []string{
-		"/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ", // IPFS
-		"/ip4/104.236.179.241/tcp/4001/p2p/QmSoLPppuBtQSGwKDZT2M73ULpjvfd3aZ6ha4oFGL1KrGM", // IPFS
+		"/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+		"/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+		"/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+		"/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+		"/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
+		"/ip4/104.236.179.241/tcp/4001/p2p/QmSoLPppuBtQSGwKDZT2M73ULpjvfd3aZ6ha4oFGL1KrGM",
+		"/ip4/1.1.1.1/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
 	}
 
 	connected := false
@@ -136,6 +165,7 @@ func (n *DecentralizedNode) Bootstrap() error {
 		if err := n.connectToPeer(addr); err == nil {
 			connected = true
 			fmt.Printf("✅ Connected to public DHT node\n")
+			// We only need one connection to start bootstrapping.
 			break
 		}
 	}
@@ -160,4 +190,30 @@ func (n *DecentralizedNode) Bootstrap() error {
 func (n *DecentralizedNode) Close() error {
 	n.cancel()
 	return n.host.Close()
+}
+
+// LeaveTopic closes the subscription to a topic.
+func (n *DecentralizedNode) LeaveTopic(topic string) error {
+	n.joinedTopicsMux.Lock()
+	defer n.joinedTopicsMux.Unlock()
+
+	pubsubTopic, exists := n.joinedTopics[topic]
+	if !exists {
+		return fmt.Errorf("not in topic: %s", topic)
+	}
+
+	delete(n.joinedTopics, topic)
+	return pubsubTopic.Close()
+}
+
+// DisconnectFromPeer closes the connection to a specific peer.
+func (n *DecentralizedNode) DisconnectFromPeer(peerID peer.ID) error {
+	return n.host.Network().ClosePeer(peerID)
+}
+
+// DisconnectFromAllPeers closes all active connections.
+func (n *DecentralizedNode) DisconnectFromAllPeers() {
+	for _, conn := range n.host.Network().Conns() {
+		n.host.Network().ClosePeer(conn.RemotePeer())
+	}
 }

@@ -33,7 +33,7 @@ func (n *DecentralizedNode) maintainNetwork() {
 func (n *DecentralizedNode) cleanupStaleConnections() {
 	n.peersMux.Lock()
 	defer n.peersMux.Unlock()
-	staleThreshold := time.Now().Add(-10 * time.Minute)
+	staleThreshold := time.Now().Add(-60 * time.Minute)
 	for id, peerInfo := range n.peers {
 		if peerInfo.LastSeen.Before(staleThreshold) && n.host.Network().Connectedness(id) == network.NotConnected {
 			delete(n.peers, id)
@@ -73,7 +73,7 @@ func (n *DecentralizedNode) connectToPeer(addrStr string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(n.ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(n.ctx, 30*time.Second)
 	defer cancel()
 	if err := n.host.Connect(ctx, *peerInfo); err != nil {
 		return err
