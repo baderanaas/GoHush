@@ -11,6 +11,7 @@ import (
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/routing"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
@@ -92,10 +93,10 @@ func NewDecentralizedNode(port int, baseDir string, relayAddr string) (*Decentra
 		),
 		libp2p.Identity(privKey),
 		libp2p.ConnectionManager(cm),
-		libp2p.EnableAutoRelayWithStaticRelays(staticRelays),
+		libp2p.ResourceManager(&network.NullResourceManager{}),
+		libp2p.EnableRelay(),
 		libp2p.EnableHolePunching(),
 		libp2p.EnableNATService(),
-		libp2p.EnableRelayService(),
 		libp2p.NATPortMap(),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			var err error
