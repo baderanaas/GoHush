@@ -3,6 +3,7 @@ package libp2p
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"time"
 
@@ -121,60 +122,63 @@ func (n *DecentralizedNode) handlePubSubMessages(sub *pubsub.Subscription, topic
 	}
 }
 
-// handlePrivateChatStream handles incoming private messages.
+// handlePrivateChatStream handles incoming private messages from a persistent stream.
 func (n *DecentralizedNode) handlePrivateChatStream(s network.Stream) {
+	remotePeerID := s.Conn().RemotePeer()
 	defer func() {
-		if err := s.Close(); err != nil {
-			log.Printf("Error closing stream: %v", err)
-		}
+		s.Close()
+		n.privateStreamsMux.Lock()
+		delete(n.privateStreams, remotePeerID)
+		n.privateStreamsMux.Unlock()
+		log.Printf("Closed private chat stream with %s", remotePeerID.String()[:12])
 	}()
+
 	decoder := json.NewDecoder(s)
-	var msg ChatMessage
-	if err := decoder.Decode(&msg); err != nil {
-		log.Printf("Failed to decode private message: %v", err)
-		return
-	}
+	for {
+		var msg ChatMessage
+		if err := decoder.Decode(&msg); err != nil {
+			if err != io.EOF {
+				log.Printf("Failed to decode private message from %s: %v", remotePeerID.String()[:12], err)
+			}
+			return
+		}
 
-	// Prevent message loops
-	n.historyMux.Lock()
-	if _, exists := n.messageHistory[msg.ID]; exists {
+		// Prevent message loops
+		n.historyMux.Lock()
+		if _, exists := n.messageHistory[msg.ID]; exists {
+			n.historyMux.Unlock()
+			continue
+		}
+		n.messageHistory[msg.ID] = time.Now()
 		n.historyMux.Unlock()
-		return
-	}
-	n.messageHistory[msg.ID] = time.Now()
-	n.historyMux.Unlock()
 
-	// Derive shared secret for decryption
-	remotePeerID, err := peer.Decode(msg.From)
-	if err != nil {
-		log.Printf("Failed to decode sender peer ID: %v", err)
-		return
-	}
-	key := crypto.KeyFromPeers(n.host.ID(), remotePeerID)
+		// Derive shared secret for decryption
+		key := crypto.KeyFromPeers(n.host.ID(), remotePeerID)
 
-	plaintext, err := crypto.Decrypt(msg.Content, key)
-	if err != nil {
-		log.Printf("⚠️ Failed to decrypt private message from %s", msg.From[:12])
-		return
-	}
+		plaintext, err := crypto.Decrypt(msg.Content, key)
+		if err != nil {
+			log.Printf("⚠️ Failed to decrypt private message from %s", msg.From[:12])
+			continue
+		}
 
-	// Log the plaintext message for local history
-	logMsg := &ChatMessage{
-		ID:        msg.ID,
-		From:      msg.From,
-		Content:   string(plaintext),
-		Topic:     remotePeerID.String(),
-		Timestamp: msg.Timestamp,
-	}
-	if err := LogMessage(remotePeerID.String(), logMsg, n.hushDir); err != nil {
-		log.Printf("⚠️ Failed to log received private message: %v", err)
-	}
+		// Log the plaintext message for local history
+		logMsg := &ChatMessage{
+			ID:        msg.ID,
+			From:      msg.From,
+			Content:   string(plaintext),
+			Topic:     remotePeerID.String(),
+			Timestamp: msg.Timestamp,
+		}
+		if err := LogMessage(remotePeerID.String(), logMsg, n.hushDir); err != nil {
+			log.Printf("⚠️ Failed to log received private message: %v", err)
+		}
 
-	fromShort := msg.From
-	if len(fromShort) > 12 {
-		fromShort = fromShort[:12]
+		fromShort := msg.From
+		if len(fromShort) > 12 {
+			fromShort = fromShort[:12]
+		}
+		fmt.Printf("\r[private from %s] %s\n> ", fromShort, string(plaintext))
 	}
-	fmt.Printf("\r[private from %s] %s\n> ", fromShort, string(plaintext))
 }
 
 // SendMessage encrypts and publishes a message to a topic.
@@ -226,8 +230,35 @@ func (n *DecentralizedNode) SendMessage(content, topic string) error {
 	return pubsubTopic.Publish(n.ctx, data)
 }
 
-// SendPrivateMessage sends an encrypted message directly to a peer.
+// getOrCreateStream finds an existing stream or creates a new one for a peer.
+func (n *DecentralizedNode) getOrCreateStream(to peer.ID) (network.Stream, error) {
+	n.privateStreamsMux.Lock()
+	defer n.privateStreamsMux.Unlock()
+
+	s, exists := n.privateStreams[to]
+	if exists {
+		// Check if the stream is still valid. A simple way is to try a write,
+		// but that's complex. For now, we assume it's good if it exists.
+		// A better check might be needed in a production system.
+		return s, nil
+	}
+
+	s, err := n.host.NewStream(n.ctx, to, PrivateChatProtocol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open stream to peer: %w", err)
+	}
+
+	n.privateStreams[to] = s
+	return s, nil
+}
+
+// SendPrivateMessage sends an encrypted message directly to a peer using a persistent stream.
 func (n *DecentralizedNode) SendPrivateMessage(content string, to peer.ID) error {
+	s, err := n.getOrCreateStream(to)
+	if err != nil {
+		return err
+	}
+
 	key := crypto.KeyFromPeers(n.host.ID(), to)
 	encryptedContent, err := crypto.Encrypt([]byte(content), key)
 	if err != nil {
@@ -243,19 +274,13 @@ func (n *DecentralizedNode) SendPrivateMessage(content string, to peer.ID) error
 		Timestamp: time.Now(),
 	}
 
-	s, err := n.host.NewStream(n.ctx, to, PrivateChatProtocol)
-	if err != nil {
-		return fmt.Errorf("failed to open stream to peer: %w", err)
-	}
-	defer func() {
-		if err := s.Close(); err != nil {
-			// We can't return an error here, so we log it.
-			log.Printf("Error closing stream for private message: %v", err)
-		}
-	}()
-
 	encoder := json.NewEncoder(s)
 	if err := encoder.Encode(msg); err != nil {
+		// If encoding fails, the stream is likely broken. Close and remove it.
+		s.Close()
+		n.privateStreamsMux.Lock()
+		delete(n.privateStreams, to)
+		n.privateStreamsMux.Unlock()
 		return fmt.Errorf("failed to send private message: %w", err)
 	}
 

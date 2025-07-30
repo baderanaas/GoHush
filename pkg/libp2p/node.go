@@ -39,6 +39,10 @@ type DecentralizedNode struct {
 	messageHistory map[string]time.Time // Prevent message loops and clean up
 	historyMux     sync.RWMutex
 
+	// Private messaging streams
+	privateStreams    map[peer.ID]network.Stream
+	privateStreamsMux sync.Mutex
+
 	// Bootstrap peers (discovered dynamically)
 	bootstrapPeers []peer.AddrInfo
 	bootstrapMux   sync.RWMutex
@@ -127,6 +131,7 @@ func NewDecentralizedNode(port int, baseDir string, relayAddr string) (*Decentra
 		peers:          make(map[peer.ID]*PeerInfo),
 		joinedTopics:   make(map[string]*pubsub.Topic),
 		messageHistory: make(map[string]time.Time),
+		privateStreams: make(map[peer.ID]network.Stream),
 		bootstrapPeers: make([]peer.AddrInfo, 0),
 	}
 
