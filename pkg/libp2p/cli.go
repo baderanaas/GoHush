@@ -26,9 +26,12 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 	fmt.Printf("  /disconnect <peerID>       - Disconnect from a specific peer\n")
 	fmt.Printf("  /disconnect-all            - Disconnect from all peers\n")
 	fmt.Printf("  /msg <topic> <msg>         - Send a message to a specific topic\n")
-	fmt.Printf("  /private <peerID> <msg>    - Send a private message to a peer\n")
+	fmt.Printf("  /private <peerID|name> <msg> - Send a private message to a peer or contact\n")
+	fmt.Printf("  /contacts                  - List all contacts\n")
+	fmt.Printf("  /add-contact <name> <peerID> - Add a new contact\n")
+	fmt.Printf("  /switch <topic>            - Switch the current chat topic\n")
 	fmt.Printf("  /quit                      - Exit\n")
-	fmt.Printf("  <message>                  - Send to all joined topics\n")
+	fmt.Printf("  <message>                  - Send to the current topic\n")
 	fmt.Printf("\nNetwork is fully decentralized - no servers needed!\n")
 	fmt.Print("> ")
 
@@ -49,6 +52,7 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 			if err := n.JoinTopic(topic); err != nil {
 				log.Printf("❌ Failed to join topic: %v\n", err)
 			} else {
+				n.currentTopic = topic
 				// Load and display recent messages
 				messages, err := LoadRecentMessages(topic, 20, n.hushDir)
 				if err != nil {
@@ -70,6 +74,9 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 				log.Printf("❌ Failed to leave topic: %v\n", err)
 			} else {
 				fmt.Printf("✅ Left topic: %s\n", topic)
+				if n.currentTopic == topic {
+					n.currentTopic = ""
+				}
 			}
 		case strings.HasPrefix(input, "/history "):
 			parts := strings.Fields(input)
@@ -111,7 +118,11 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 			} else {
 				fmt.Println("Joined topics:")
 				for topic := range n.joinedTopics {
-					fmt.Printf("  - %s\n", topic)
+					if topic == n.currentTopic {
+						fmt.Printf("  - %s (current)\n", topic)
+					} else {
+						fmt.Printf("  - %s\n", topic)
+					}
 				}
 			}
 			n.joinedTopicsMux.RUnlock()
@@ -156,39 +167,96 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 		case strings.HasPrefix(input, "/private "):
 			parts := strings.SplitN(input[9:], " ", 2)
 			if len(parts) < 2 {
-				fmt.Println("Usage: /private <peerID> <message>")
+				fmt.Println("Usage: /private <peerID|name> <message>")
 				continue
 			}
-			peerID, err := peer.Decode(parts[0])
+			
+			peerIDStr := parts[0]
+			var peerID peer.ID
+			var err error
+			
+			// Try to find peerID from contacts first
+			contact, found := n.contactManager.GetContact(peerIDStr)
+			if found {
+				peerID, err = peer.Decode(contact.PeerID)
+				if err != nil {
+					fmt.Printf("❌ Invalid peer ID for contact %s: %v\n", peerIDStr, err)
+					continue
+				}
+			} else {
+				// If not a contact, assume it's a peerID
+				peerID, err = peer.Decode(peerIDStr)
+				if err != nil {
+					fmt.Printf("❌ Invalid peer ID or contact name: %v\n", err)
+					continue
+				}
+			}
+
+			if err := n.SendPrivateMessage(parts[1], peerID); err != nil {
+				log.Printf("❌ Failed to send private message: %v\n", err)
+			}
+		
+		case input == "/contacts":
+			contacts := n.contactManager.ListContacts()
+			if len(contacts) == 0 {
+				fmt.Println("No contacts found. Use /add-contact <name> <peerID> to add one.")
+			} else {
+				fmt.Println("Contacts:")
+				for _, contact := range contacts {
+					fmt.Printf("  - %s: %s\n", contact.Name, contact.PeerID)
+				}
+			}
+		
+		case strings.HasPrefix(input, "/add-contact "):
+			parts := strings.SplitN(input[13:], " ", 2)
+			if len(parts) < 2 {
+				fmt.Println("Usage: /add-contact <name> <peerID>")
+				continue
+			}
+			name := parts[0]
+			peerID := parts[1]
+			
+			// Validate peerID
+			_, err := peer.Decode(peerID)
 			if err != nil {
 				fmt.Printf("❌ Invalid peer ID: %v\n", err)
 				continue
 			}
-			if err := n.SendPrivateMessage(parts[1], peerID); err != nil {
-				log.Printf("❌ Failed to send private message: %v\n", err)
+
+			n.contactManager.AddContact(name, peerID)
+			if err := n.contactManager.SaveContacts(); err != nil {
+				log.Printf("❌ Failed to save contacts: %v\n", err)
+			} else {
+				fmt.Printf("✅ Contact '%s' added.\n", name)
+			}
+		
+		case strings.HasPrefix(input, "/switch "):
+			topic := strings.TrimSpace(input[8:])
+			n.joinedTopicsMux.RLock()
+			_, exists := n.joinedTopics[topic]
+			n.joinedTopicsMux.RUnlock()
+			if !exists {
+				fmt.Printf("You are not in topic '%s'. Use /join %s to join it.\n", topic, topic)
+			} else {
+				n.currentTopic = topic
+				fmt.Printf("Switched to topic '%s'\n", topic)
 			}
 
 		default:
-			n.joinedTopicsMux.RLock()
-			if len(n.joinedTopics) == 0 {
-				fmt.Println("No topics joined. Use /join <topic> to send a message.")
-				n.joinedTopicsMux.RUnlock()
+			if n.currentTopic == "" {
+				fmt.Println("No active topic. Use /join <topic> or /switch <topic>.")
 				continue
 			}
-			// Send to all joined topics
-			for topic := range n.joinedTopics {
-				if err := n.SendMessage(input, topic); err != nil {
-					log.Printf("❌ Failed to send message to topic %s: %v\n", topic, err)
-				}
+			if err := n.SendMessage(input, n.currentTopic); err != nil {
+				log.Printf("❌ Failed to send message to topic %s: %v\n", n.currentTopic, err)
 			}
-			n.joinedTopicsMux.RUnlock()
 		}
 		fmt.Print("> ")
 	}
 }
 
 // StartDecentralized is the main entry point for the decentralized mode.
-func StartDecentralized(port int, relayAddr string) {
+func StartDecentralized(port int, relayAddr string) error {
 	if port == 0 {
 		// Use a random port to allow multiple nodes on the same machine
 		port = 8000 + int(time.Now().Unix()%1000)
@@ -197,7 +265,7 @@ func StartDecentralized(port int, relayAddr string) {
 	// Pass an empty string to use the default user directory
 	node, err := NewDecentralizedNode(port, "", relayAddr)
 	if err != nil {
-		log.Fatalf("❌ Failed to create decentralized node: %v", err)
+		return fmt.Errorf("failed to create decentralized node: %w", err)
 	}
 	defer func() {
 		if err := node.Close(); err != nil {
@@ -206,10 +274,11 @@ func StartDecentralized(port int, relayAddr string) {
 	}()
 
 	if err := node.Bootstrap(); err != nil {
-		log.Fatalf("❌ Failed to bootstrap: %v", err)
+		return fmt.Errorf("failed to bootstrap: %w", err)
 	}
 
 	time.Sleep(3 * time.Second)
 
 	node.StartDecentralizedCLI()
+	return nil
 }

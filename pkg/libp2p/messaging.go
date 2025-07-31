@@ -88,38 +88,42 @@ func (n *DecentralizedNode) handlePubSubMessages(sub *pubsub.Subscription, topic
 			continue
 		}
 
-		n.historyMux.Lock()
-		if _, exists := n.messageHistory[chatMsg.ID]; exists {
-			n.historyMux.Unlock()
-			continue
-		}
-		n.messageHistory[chatMsg.ID] = time.Now()
-		n.historyMux.Unlock()
-
-		plaintext, err := crypto.Decrypt(chatMsg.Content, key)
-		if err != nil {
-			log.Printf("⚠️ Failed to decrypt message on topic '%s' from %s", topic, chatMsg.From[:12])
-			continue
-		}
-
-		// Log the plaintext message for local history
-		logMsg := &ChatMessage{
-			ID:        chatMsg.ID,
-			From:      chatMsg.From,
-			Content:   string(plaintext),
-			Topic:     topic,
-			Timestamp: chatMsg.Timestamp,
-		}
-		if err := LogMessage(topic, logMsg, n.hushDir); err != nil {
-			log.Printf("⚠️ Failed to log received message: %v", err)
-		}
-
-		fromShort := chatMsg.From
-		if len(fromShort) > 12 {
-			fromShort = fromShort[:12]
-		}
-		fmt.Printf("\r[%s] %s: %s\n> ", topic, fromShort, string(plaintext))
+		n.handleIncomingMessage(chatMsg, topic, key)
 	}
+}
+
+func (n *DecentralizedNode) handleIncomingMessage(chatMsg ChatMessage, topic string, key []byte) {
+	n.historyMux.Lock()
+	if _, exists := n.messageHistory[chatMsg.ID]; exists {
+		n.historyMux.Unlock()
+		return
+	}
+	n.messageHistory[chatMsg.ID] = time.Now()
+	n.historyMux.Unlock()
+
+	plaintext, err := crypto.Decrypt(chatMsg.Content, key)
+	if err != nil {
+		log.Printf("⚠️ Failed to decrypt message on topic '%s' from %s", topic, chatMsg.From[:12])
+		return
+	}
+
+	// Log the plaintext message for local history
+	logMsg := &ChatMessage{
+		ID:        chatMsg.ID,
+		From:      chatMsg.From,
+		Content:   string(plaintext),
+		Topic:     topic,
+		Timestamp: chatMsg.Timestamp,
+	}
+	if err := LogMessage(topic, logMsg, n.hushDir); err != nil {
+		log.Printf("⚠️ Failed to log received message: %v", err)
+	}
+
+	fromShort := chatMsg.From
+	if len(fromShort) > 12 {
+		fromShort = fromShort[:12]
+	}
+	fmt.Printf("\r[%s] %s: %s\n> ", topic, fromShort, string(plaintext))
 }
 
 // handlePrivateChatStream handles incoming private messages from a persistent stream.
@@ -143,58 +147,17 @@ func (n *DecentralizedNode) handlePrivateChatStream(s network.Stream) {
 			return
 		}
 
-		// Prevent message loops
-		n.historyMux.Lock()
-		if _, exists := n.messageHistory[msg.ID]; exists {
-			n.historyMux.Unlock()
-			continue
-		}
-		n.messageHistory[msg.ID] = time.Now()
-		n.historyMux.Unlock()
-
 		// Derive shared secret for decryption
 		key := crypto.KeyFromPeers(n.host.ID(), remotePeerID)
 
-		plaintext, err := crypto.Decrypt(msg.Content, key)
-		if err != nil {
-			log.Printf("⚠️ Failed to decrypt private message from %s", msg.From[:12])
-			continue
-		}
-
-		// Log the plaintext message for local history
-		logMsg := &ChatMessage{
-			ID:        msg.ID,
-			From:      msg.From,
-			Content:   string(plaintext),
-			Topic:     remotePeerID.String(),
-			Timestamp: msg.Timestamp,
-		}
-		if err := LogMessage(remotePeerID.String(), logMsg, n.hushDir); err != nil {
-			log.Printf("⚠️ Failed to log received private message: %v", err)
-		}
-
-		fromShort := msg.From
-		if len(fromShort) > 12 {
-			fromShort = fromShort[:12]
-		}
-		fmt.Printf("\r[private from %s] %s\n> ", fromShort, string(plaintext))
+		n.handleIncomingMessage(msg, remotePeerID.String(), key)
 	}
 }
 
-// SendMessage encrypts and publishes a message to a topic.
-func (n *DecentralizedNode) SendMessage(content, topic string) error {
-	n.joinedTopicsMux.RLock()
-	pubsubTopic, exists := n.joinedTopics[topic]
-	n.joinedTopicsMux.RUnlock()
-
-	if !exists {
-		return fmt.Errorf("not joined to topic: %s", topic)
-	}
-
-	key := crypto.KeyFromTopic(topic)
+func (n *DecentralizedNode) createMessage(content, topic string, key []byte) (*ChatMessage, error) {
 	encryptedContent, err := crypto.Encrypt([]byte(content), key)
 	if err != nil {
-		return fmt.Errorf("failed to encrypt message: %w", err)
+		return nil, fmt.Errorf("failed to encrypt message: %w", err)
 	}
 
 	msgID := generateMessageID(encryptedContent, n.host.ID().String(), time.Now())
@@ -210,11 +173,6 @@ func (n *DecentralizedNode) SendMessage(content, topic string) error {
 	n.messageHistory[msgID] = time.Now()
 	n.historyMux.Unlock()
 
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
 	// Log the plaintext message for local history
 	logMsg := &ChatMessage{
 		ID:        msgID,
@@ -225,6 +183,30 @@ func (n *DecentralizedNode) SendMessage(content, topic string) error {
 	}
 	if err := LogMessage(topic, logMsg, n.hushDir); err != nil {
 		log.Printf("⚠️ Failed to log sent message: %v", err)
+	}
+
+	return msg, nil
+}
+
+// SendMessage encrypts and publishes a message to a topic.
+func (n *DecentralizedNode) SendMessage(content, topic string) error {
+	n.joinedTopicsMux.RLock()
+	pubsubTopic, exists := n.joinedTopics[topic]
+	n.joinedTopicsMux.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("not joined to topic: %s", topic)
+	}
+
+	key := crypto.KeyFromTopic(topic)
+	msg, err := n.createMessage(content, topic, key)
+	if err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
 	return pubsubTopic.Publish(n.ctx, data)
@@ -260,18 +242,9 @@ func (n *DecentralizedNode) SendPrivateMessage(content string, to peer.ID) error
 	}
 
 	key := crypto.KeyFromPeers(n.host.ID(), to)
-	encryptedContent, err := crypto.Encrypt([]byte(content), key)
+	msg, err := n.createMessage(content, to.String(), key)
 	if err != nil {
-		return fmt.Errorf("failed to encrypt private message: %w", err)
-	}
-
-	msgID := generateMessageID(encryptedContent, n.host.ID().String(), time.Now())
-	msg := &ChatMessage{
-		ID:        msgID,
-		From:      n.host.ID().String(),
-		Content:   encryptedContent,
-		Topic:     "", // No topic for private messages
-		Timestamp: time.Now(),
+		return err
 	}
 
 	encoder := json.NewEncoder(s)
@@ -282,18 +255,6 @@ func (n *DecentralizedNode) SendPrivateMessage(content string, to peer.ID) error
 		delete(n.privateStreams, to)
 		n.privateStreamsMux.Unlock()
 		return fmt.Errorf("failed to send private message: %w", err)
-	}
-
-	// Log the plaintext message for local history
-	logMsg := &ChatMessage{
-		ID:        msgID,
-		From:      n.host.ID().String(),
-		Content:   content, // Log plaintext
-		Topic:     to.String(),
-		Timestamp: msg.Timestamp,
-	}
-	if err := LogMessage(to.String(), logMsg, n.hushDir); err != nil {
-		log.Printf("⚠️ Failed to log sent private message: %v", err)
 	}
 
 	return nil
