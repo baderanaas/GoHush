@@ -81,6 +81,19 @@ func (cm *ContactManager) GetContact(name string) (Contact, bool) {
 	return Contact{}, false
 }
 
+// GetContactByPeerID returns a contact by peer ID.
+func (cm *ContactManager) GetContactByPeerID(peerID string) (Contact, bool) {
+	cm.lock.RLock()
+	defer cm.lock.RUnlock()
+
+	for _, contact := range cm.contacts {
+		if contact.PeerID == peerID {
+			return contact, true
+		}
+	}
+	return Contact{}, false
+}
+
 // ListContacts returns all contacts.
 func (cm *ContactManager) ListContacts() []Contact {
 	cm.lock.RLock()

@@ -2,6 +2,7 @@ package libp2p
 
 import (
 	"bufio"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -17,11 +18,12 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Printf("\n✅ Fully Decentralized & Encrypted P2P Chat Started!\n")
 	fmt.Printf("Commands:\n")
-	fmt.Printf("  /join <topic>              - Join an encrypted chat topic\n")
+	fmt.Printf("  /create <topic>            - Create a new private, invite-only topic\n")
+	fmt.Printf("  /invite <topic>            - Generate an invite code for a topic\n")
+	fmt.Printf("  /join <invite_code>        - Join a topic using an invite code\n")
 	fmt.Printf("  /leave <topic>             - Leave a chat topic\n")
 	fmt.Printf("  /history <topic|peer> [n]  - Show the last [n] messages (default 50)\n")
 	fmt.Printf("  /topics                    - Show joined topics\n")
-	fmt.Printf("  /peers                     - List network peers and their full IDs\n")
 	fmt.Printf("  /connect <addr>            - Connect to a specific peer\n")
 	fmt.Printf("  /disconnect <peerID>       - Disconnect from a specific peer\n")
 	fmt.Printf("  /disconnect-all            - Disconnect from all peers\n")
@@ -47,27 +49,59 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 			fmt.Println("🔌 Shutting down decentralized node...")
 			return
 
+		case strings.HasPrefix(input, "/create "):
+			topicName := strings.TrimSpace(input[8:])
+			if topicName == "" {
+				fmt.Println("Usage: /create <topic_name>")
+				continue
+			}
+			topicInfo, err := n.topicManager.CreateTopic(topicName)
+			if err != nil {
+				log.Printf("❌ Failed to create topic: %v\n", err)
+				continue
+			}
+			if err := n.JoinTopic(topicInfo); err != nil {
+				log.Printf("❌ Failed to join topic after creation: %v\n", err)
+			} else {
+				n.currentTopic = topicName
+				fmt.Printf("✅ Created and joined private topic: %s\n", topicName)
+				fmt.Println("Use /invite to share it with others.")
+			}
+
+		case strings.HasPrefix(input, "/invite "):
+			topicName := strings.TrimSpace(input[8:])
+			topicInfo, found := n.topicManager.GetTopic(topicName)
+			if !found {
+				fmt.Printf("You are not in topic '%s'.\n", topicName)
+				continue
+			}
+			inviteCode := base64.URLEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", topicInfo.Name, topicInfo.Secret)))
+			fmt.Printf("Invite code for '%s':\n%s\n", topicName, inviteCode)
+
 		case strings.HasPrefix(input, "/join "):
-			topic := strings.TrimSpace(input[6:])
-			if err := n.JoinTopic(topic); err != nil {
+			inviteCode := strings.TrimSpace(input[6:])
+			decoded, err := base64.URLEncoding.DecodeString(inviteCode)
+			if err != nil {
+				fmt.Println("❌ Invalid invite code.")
+				continue
+			}
+			parts := strings.SplitN(string(decoded), ":", 2)
+			if len(parts) != 2 {
+				fmt.Println("❌ Invalid invite code format.")
+				continue
+			}
+			topicInfo := TopicInfo{Name: parts[0], Secret: parts[1]}
+			if err := n.topicManager.AddTopic(topicInfo); err != nil {
+				log.Printf("❌ Failed to save topic info: %v\n", err)
+				continue
+			}
+			if err := n.JoinTopic(topicInfo); err != nil {
 				log.Printf("❌ Failed to join topic: %v\n", err)
 			} else {
-				n.currentTopic = topic
-				// Load and display recent messages
-				messages, err := LoadRecentMessages(topic, 20, n.hushDir)
-				if err != nil {
-					log.Printf("⚠️ Could not load message history: %v", err)
-				}
-				fmt.Printf("--- History for %s ---\n", topic)
-				for _, msg := range messages {
-					fromShort := msg.From
-					if len(fromShort) > 12 {
-						fromShort = fromShort[:12]
-					}
-					fmt.Printf("[%s] %s: %s\n", msg.Timestamp.Format("15:04"), fromShort, msg.Content)
-				}
-				fmt.Println("--- End of history ---")
+				n.currentTopic = topicInfo.Name
+				fmt.Printf("✅ Joined private topic: %s\n", topicInfo.Name)
 			}
+
 		case strings.HasPrefix(input, "/leave "):
 			topic := strings.TrimSpace(input[7:])
 			if err := n.LeaveTopic(topic); err != nil {
@@ -81,10 +115,10 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 		case strings.HasPrefix(input, "/history "):
 			parts := strings.Fields(input)
 			if len(parts) < 2 {
-				fmt.Println("Usage: /history <topic_or_peer_id> [count]")
+				fmt.Println("Usage: /history <topic|peer|contact> [count]")
 				continue
 			}
-			logID := parts[1]
+			target := parts[1]
 			count := 50 // Default message count
 			if len(parts) > 2 {
 				var err error
@@ -95,13 +129,56 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 				}
 			}
 
+			var logID string
+			var displayName string
+
+			// Handle explicit prefixes first
+			if strings.HasPrefix(target, "topic:") {
+				topicName := strings.TrimPrefix(target, "topic:")
+				logID = topicName
+				displayName = topicName
+			} else if strings.HasPrefix(target, "peer:") {
+				peerIdentifier := strings.TrimPrefix(target, "peer:")
+				contact, found := n.contactManager.GetContact(peerIdentifier)
+				if found {
+					logID = contact.PeerID
+					displayName = peerIdentifier
+				} else {
+					// Assume it's a raw Peer ID
+					logID = peerIdentifier
+					displayName = peerIdentifier
+				}
+			} else {
+				// No prefix, check for ambiguity
+				_, isTopic := n.topicManager.GetTopic(target)
+				contact, isContact := n.contactManager.GetContact(target)
+
+				if isTopic && isContact {
+					fmt.Printf("Ambiguous name: '%s' is both a topic and a contact.\n", target)
+					fmt.Printf("Please specify with '/history topic:%s' or '/history peer:%s'\n", target, target)
+					continue
+				}
+
+				if isTopic {
+					logID = target
+					displayName = target
+				} else if isContact {
+					logID = contact.PeerID
+					displayName = target
+				} else {
+					// Default to assuming it's a topic or raw peer ID
+					logID = target
+					displayName = target
+				}
+			}
+
 			messages, err := LoadRecentMessages(logID, count, n.hushDir)
 			if err != nil {
-				log.Printf("⚠️ Could not load message history for %s: %v", logID, err)
+				log.Printf("⚠️ Could not load message history for %s: %v", displayName, err)
 				continue
 			}
 
-			fmt.Printf("--- History for %s (last %d messages) ---\n", logID, len(messages))
+			fmt.Printf("--- History for %s (last %d messages) ---\n", displayName, len(messages))
 			for _, msg := range messages {
 				fromShort := msg.From
 				if len(fromShort) > 12 {
@@ -112,12 +189,12 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 			fmt.Println("--- End of history ---")
 
 		case input == "/topics":
-			n.joinedTopicsMux.RLock()
-			if len(n.joinedTopics) == 0 {
-				fmt.Println("No active topics. Use /join <topic> to start.")
+			topics := n.topicManager.ListTopics()
+			if len(topics) == 0 {
+				fmt.Println("No active topics. Use /create <topic> or /join <invite_code> to start.")
 			} else {
 				fmt.Println("Joined topics:")
-				for topic := range n.joinedTopics {
+				for _, topic := range topics {
 					if topic == n.currentTopic {
 						fmt.Printf("  - %s (current)\n", topic)
 					} else {
@@ -125,11 +202,6 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 					}
 				}
 			}
-			n.joinedTopicsMux.RUnlock()
-
-
-		case input == "/peers":
-			n.ListPeers()
 
 		case strings.HasPrefix(input, "/connect "):
 			addr := strings.TrimSpace(input[9:])
@@ -170,11 +242,11 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 				fmt.Println("Usage: /private <peerID|name> <message>")
 				continue
 			}
-			
+
 			peerIDStr := parts[0]
 			var peerID peer.ID
 			var err error
-			
+
 			// Try to find peerID from contacts first
 			contact, found := n.contactManager.GetContact(peerIDStr)
 			if found {
@@ -195,7 +267,7 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 			if err := n.SendPrivateMessage(parts[1], peerID); err != nil {
 				log.Printf("❌ Failed to send private message: %v\n", err)
 			}
-		
+
 		case input == "/contacts":
 			contacts := n.contactManager.ListContacts()
 			if len(contacts) == 0 {
@@ -206,7 +278,7 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 					fmt.Printf("  - %s: %s\n", contact.Name, contact.PeerID)
 				}
 			}
-		
+
 		case strings.HasPrefix(input, "/add-contact "):
 			parts := strings.SplitN(input[13:], " ", 2)
 			if len(parts) < 2 {
@@ -215,7 +287,7 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 			}
 			name := parts[0]
 			peerID := parts[1]
-			
+
 			// Validate peerID
 			_, err := peer.Decode(peerID)
 			if err != nil {
@@ -229,14 +301,12 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 			} else {
 				fmt.Printf("✅ Contact '%s' added.\n", name)
 			}
-		
+
 		case strings.HasPrefix(input, "/switch "):
 			topic := strings.TrimSpace(input[8:])
-			n.joinedTopicsMux.RLock()
-			_, exists := n.joinedTopics[topic]
-			n.joinedTopicsMux.RUnlock()
+			_, exists := n.topicManager.GetTopic(topic)
 			if !exists {
-				fmt.Printf("You are not in topic '%s'. Use /join %s to join it.\n", topic, topic)
+				fmt.Printf("You are not in topic '%s'. Use /create or /join to add it.\n", topic)
 			} else {
 				n.currentTopic = topic
 				fmt.Printf("Switched to topic '%s'\n", topic)
@@ -244,7 +314,7 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 
 		default:
 			if n.currentTopic == "" {
-				fmt.Println("No active topic. Use /join <topic> or /switch <topic>.")
+				fmt.Println("No active topic. Use /create, /join, or /switch.")
 				continue
 			}
 			if err := n.SendMessage(input, n.currentTopic); err != nil {

@@ -18,6 +18,9 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
+// incomingMessageHandler defines the signature for functions that process incoming messages.
+type incomingMessageHandler func(chatMsg ChatMessage, topicDisplayName string, key []byte)
+
 // DecentralizedNode - Fully autonomous P2P node
 type DecentralizedNode struct {
 	host    host.Host
@@ -38,6 +41,7 @@ type DecentralizedNode struct {
 	// Message handling
 	messageHistory map[string]time.Time // Prevent message loops and clean up
 	historyMux     sync.RWMutex
+	messageHandler incomingMessageHandler
 
 	// Private messaging streams
 	privateStreams    map[peer.ID]network.Stream
@@ -49,6 +53,9 @@ type DecentralizedNode struct {
 
 	// Contact management
 	contactManager *ContactManager
+
+	// Topic management
+	topicManager *TopicManager
 
 	// Current topic
 	currentTopic string
@@ -75,13 +82,7 @@ func (n *DecentralizedNode) SetTUI(tui interface{}) {
 
 // GetJoinedTopics returns a slice of joined topics.
 func (n *DecentralizedNode) GetJoinedTopics() []string {
-	n.joinedTopicsMux.RLock()
-	defer n.joinedTopicsMux.RUnlock()
-	topics := make([]string, 0, len(n.joinedTopics))
-	for topic := range n.joinedTopics {
-		topics = append(topics, topic)
-	}
-	return topics
+	return n.topicManager.ListTopics()
 }
 
 // NewDecentralizedNode creates a fully decentralized node
@@ -98,6 +99,12 @@ func NewDecentralizedNode(port int, baseDir string, relayAddr string) (*Decentra
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create contact manager: %w", err)
+	}
+
+	topicManager, err := NewTopicManager("topics.json")
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create topic manager: %w", err)
 	}
 
 	var idht *dht.IpfsDHT
@@ -176,6 +183,7 @@ func NewDecentralizedNode(port int, baseDir string, relayAddr string) (*Decentra
 		privateStreams: make(map[peer.ID]network.Stream),
 		bootstrapPeers: make([]peer.AddrInfo, 0),
 		contactManager: contactManager,
+		topicManager:   topicManager,
 		currentTopic:   "",
 	}
 
@@ -191,6 +199,8 @@ func NewDecentralizedNode(port int, baseDir string, relayAddr string) (*Decentra
 	}
 
 	go node.cleanupMessageHistory()
+
+	node.messageHandler = node.handleIncomingMessage
 
 	return node, nil
 }

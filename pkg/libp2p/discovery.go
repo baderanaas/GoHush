@@ -63,7 +63,6 @@ func (n *DecentralizedNode) processPeerDiscovery(peerChan <-chan peer.AddrInfo, 
 			ctx, cancel := context.WithTimeout(n.ctx, 15*time.Second)
 			defer cancel()
 			if err := n.host.Connect(ctx, peer); err == nil {
-				fmt.Printf("✅ Connected to peer via %s: %s\n", source, peer.ID.String()[:12])
 				n.exchangeDiscoveryInfo(peer.ID)
 			}
 		}(p)
