@@ -18,6 +18,9 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
+// incomingMessageHandler defines the signature for functions that process incoming messages.
+type incomingMessageHandler func(chatMsg ChatMessage, topicDisplayName string, key []byte)
+
 // DecentralizedNode - Fully autonomous P2P node
 type DecentralizedNode struct {
 	host    host.Host
@@ -38,6 +41,7 @@ type DecentralizedNode struct {
 	// Message handling
 	messageHistory map[string]time.Time // Prevent message loops and clean up
 	historyMux     sync.RWMutex
+	messageHandler incomingMessageHandler
 
 	// Private messaging streams
 	privateStreams    map[peer.ID]network.Stream
@@ -46,6 +50,39 @@ type DecentralizedNode struct {
 	// Bootstrap peers (discovered dynamically)
 	bootstrapPeers []peer.AddrInfo
 	bootstrapMux   sync.RWMutex
+
+	// Contact management
+	contactManager *ContactManager
+
+	// Topic management
+	topicManager *TopicManager
+
+	// Current topic
+	currentTopic string
+	tui          interface{} // To avoid circular dependency
+}
+
+// GetCurrentTopic returns the current topic.
+func (n *DecentralizedNode) GetCurrentTopic() string {
+	return n.currentTopic
+}
+
+// SetCurrentTopic sets the current topic.
+func (n *DecentralizedNode) SetCurrentTopic(topic string) {
+	n.currentTopic = topic
+	if n.tui != nil {
+		n.tui.(interface{ UpdateTopics(topics []string, currentTopic string) }).UpdateTopics(n.GetJoinedTopics(), n.currentTopic)
+	}
+}
+
+// SetTUI sets the TUI instance for the node.
+func (n *DecentralizedNode) SetTUI(tui interface{}) {
+	n.tui = tui
+}
+
+// GetJoinedTopics returns a slice of joined topics.
+func (n *DecentralizedNode) GetJoinedTopics() []string {
+	return n.topicManager.ListTopics()
 }
 
 // NewDecentralizedNode creates a fully decentralized node
@@ -58,9 +95,21 @@ func NewDecentralizedNode(port int, baseDir string, relayAddr string) (*Decentra
 		return nil, fmt.Errorf("failed to get hush directory: %w", err)
 	}
 
+	contactManager, err := NewContactManager("contacts.json")
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create contact manager: %w", err)
+	}
+
+	topicManager, err := NewTopicManager("topics.json")
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create topic manager: %w", err)
+	}
+
 	var idht *dht.IpfsDHT
 
-	cm, err := connmgr.NewConnManager(50, 200, connmgr.WithGracePeriod(time.Minute))
+	connmgr, err := connmgr.NewConnManager(50, 200, connmgr.WithGracePeriod(time.Minute))
 	if err != nil {
 		cancel()
 		return nil, err
@@ -96,7 +145,7 @@ func NewDecentralizedNode(port int, baseDir string, relayAddr string) (*Decentra
 			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic", port+1),
 		),
 		libp2p.Identity(privKey),
-		libp2p.ConnectionManager(cm),
+		libp2p.ConnectionManager(connmgr),
 		libp2p.ResourceManager(&network.NullResourceManager{}),
 		libp2p.EnableRelay(),
 		libp2p.EnableHolePunching(),
@@ -133,6 +182,9 @@ func NewDecentralizedNode(port int, baseDir string, relayAddr string) (*Decentra
 		messageHistory: make(map[string]time.Time),
 		privateStreams: make(map[peer.ID]network.Stream),
 		bootstrapPeers: make([]peer.AddrInfo, 0),
+		contactManager: contactManager,
+		topicManager:   topicManager,
+		currentTopic:   "",
 	}
 
 	// Set up protocol handlers
@@ -147,6 +199,8 @@ func NewDecentralizedNode(port int, baseDir string, relayAddr string) (*Decentra
 	}
 
 	go node.cleanupMessageHistory()
+
+	node.messageHandler = node.handleIncomingMessage
 
 	return node, nil
 }

@@ -11,10 +11,14 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// Derive symmetric key from topic name (AES-256)
+// KeyFromTopic derives a key from a topic string.
+// WARNING: This is not a secure way to generate keys for a real application.
+// It is used here for demonstration purposes only.
+// A real application should use a proper key exchange mechanism.
 func KeyFromTopic(topic string) []byte {
-	hash := sha256.Sum256([]byte(topic))
-	return hash[:]
+	h := sha256.New()
+	h.Write([]byte(topic))
+	return h.Sum(nil)
 }
 
 // Derive symmetric key from two peer IDs (sorted)

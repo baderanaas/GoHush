@@ -4,7 +4,6 @@ package libp2p
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -88,23 +87,4 @@ func (n *DecentralizedNode) connectToPeer(addrStr string) error {
 	return nil
 }
 
-// ListPeers prints the list of known peers and their status.
-func (n *DecentralizedNode) ListPeers() {
-	n.peersMux.RLock()
-	defer n.peersMux.RUnlock()
-	connected := len(n.host.Network().Peers())
-	fmt.Printf("📊 Network Status: %d connected, %d known peers\n", connected, len(n.peers))
 
-	for id, peerInfo := range n.peers {
-		status := "disconnected"
-		if n.host.Network().Connectedness(id) == network.Connected {
-			status = "connected"
-		}
-		interests := strings.Join(peerInfo.Interests, ", ")
-		if interests == "" {
-			interests = "none"
-		}
-		fmt.Printf("  - %s (%s) - interests: %s, trust: %.1f\n",
-			id.String(), status, interests, peerInfo.Reliability)
-	}
-}

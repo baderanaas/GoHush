@@ -1,0 +1,6 @@
+# The port to listen on for incoming connections.
+port = 8080
+
+# The multiaddress of a relay to connect to.
+# relay = "/ip4/127.0.0.1/tcp/7654/p2p/12D3KooWRLh2c6n1nB5gC3f6qY7g5p8q9a4Z6j3E2b8Y7d4f6e"
+relay = ""
