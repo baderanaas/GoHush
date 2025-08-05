@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -145,4 +146,23 @@ func (tm *TopicManager) saveTopicsUnlocked() error {
 		return err
 	}
 	return os.WriteFile(tm.filePath, file, 0644)
+}
+
+// GenerateInvite generates a base64 encoded invite string.
+func GenerateInvite(topicName, secret, peerID string) string {
+	invite := fmt.Sprintf("%s:%s:%s", topicName, secret, peerID)
+	return base64.URLEncoding.EncodeToString([]byte(invite))
+}
+
+// ParseInvite decodes and parses an invite string.
+func ParseInvite(invite string) (string, string, string, error) {
+	decoded, err := base64.URLEncoding.DecodeString(invite)
+	if err != nil {
+		return "", "", "", err
+	}
+	parts := strings.SplitN(string(decoded), ":", 3)
+	if len(parts) != 3 {
+		return "", "", "", fmt.Errorf("invalid invite format")
+	}
+	return parts[0], parts[1], parts[2], nil
 }

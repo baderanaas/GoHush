@@ -2,7 +2,6 @@ package libp2p
 
 import (
 	"bufio"
-	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -13,10 +12,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// StartDecentralizedCLI starts the command-line interface for the node.
-func (n *DecentralizedNode) StartDecentralizedCLI() {
-	scanner := bufio.NewScanner(os.Stdin)
-	fmt.Printf("\n✅ Fully Decentralized & Encrypted P2P Chat Started!\n")
+func (n *DecentralizedNode) printHelp() {
 	fmt.Printf("Commands:\n")
 	fmt.Printf("  /create <topic>            - Create a new private, invite-only topic\n")
 	fmt.Printf("  /invite <topic>            - Generate an invite code for a topic\n")
@@ -32,10 +28,19 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 	fmt.Printf("  /contacts                  - List all contacts\n")
 	fmt.Printf("  /add-contact <name> <peerID> - Add a new contact\n")
 	fmt.Printf("  /switch <topic>            - Switch the current chat topic\n")
+	fmt.Printf("  /help                      - Show this help message\n")
 	fmt.Printf("  /quit                      - Exit\n")
 	fmt.Printf("  <message>                  - Send to the current topic\n")
+}
+
+// StartDecentralizedCLI starts the command-line interface for the node.
+func (n *DecentralizedNode) StartDecentralizedCLI() {
+	scanner := bufio.NewScanner(os.Stdin)
+	fmt.Printf("\n✅ Fully Decentralized & Encrypted P2P Chat Started!\n")
+	n.printHelp()
 	fmt.Printf("\nNetwork is fully decentralized - no servers needed!\n")
 	fmt.Print("> ")
+
 
 	for scanner.Scan() {
 		input := strings.TrimSpace(scanner.Text())
@@ -45,6 +50,8 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 		}
 
 		switch {
+		case input == "/help":
+			n.printHelp()
 		case input == "/quit":
 			fmt.Println("🔌 Shutting down decentralized node...")
 			return
@@ -75,28 +82,24 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 				fmt.Printf("You are not in topic '%s'.\n", topicName)
 				continue
 			}
-			inviteCode := base64.URLEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", topicInfo.Name, topicInfo.Secret)))
+			inviteCode := GenerateInvite(topicInfo.Name, topicInfo.Secret, n.host.ID().String())
 			fmt.Printf("Invite code for '%s':\n%s\n", topicName, inviteCode)
 
 		case strings.HasPrefix(input, "/join "):
 			inviteCode := strings.TrimSpace(input[6:])
-			decoded, err := base64.URLEncoding.DecodeString(inviteCode)
+			topicName, secret, _, err := ParseInvite(inviteCode)
 			if err != nil {
 				fmt.Println("❌ Invalid invite code.")
 				continue
 			}
-			parts := strings.SplitN(string(decoded), ":", 2)
-			if len(parts) != 2 {
-				fmt.Println("❌ Invalid invite code format.")
-				continue
-			}
-			topicInfo := TopicInfo{Name: parts[0], Secret: parts[1]}
+
+			topicInfo := TopicInfo{Name: topicName, Secret: secret}
 			if err := n.topicManager.AddTopic(topicInfo); err != nil {
-				log.Printf("❌ Failed to save topic info: %v\n", err)
+				log.Printf("❌ Failed to save topic info: %v", err)
 				continue
 			}
 			if err := n.JoinTopic(topicInfo); err != nil {
-				log.Printf("❌ Failed to join topic: %v\n", err)
+				log.Printf("❌ Failed to join topic: %v", err)
 			} else {
 				n.currentTopic = topicInfo.Name
 				fmt.Printf("✅ Joined private topic: %s\n", topicInfo.Name)
@@ -194,11 +197,15 @@ func (n *DecentralizedNode) StartDecentralizedCLI() {
 				fmt.Println("No active topics. Use /create <topic> or /join <invite_code> to start.")
 			} else {
 				fmt.Println("Joined topics:")
-				for _, topic := range topics {
-					if topic == n.currentTopic {
-						fmt.Printf("  - %s (current)\n", topic)
+				for _, topicName := range topics {
+					topicInfo, _ := n.topicManager.GetTopic(topicName)
+					invite := GenerateInvite(topicInfo.Name, topicInfo.Secret, n.host.ID().String())
+					if topicName == n.currentTopic {
+						fmt.Printf("  - %s (current)\n", topicName)
+						fmt.Printf("    Invite: %s\n", invite)
 					} else {
-						fmt.Printf("  - %s\n", topic)
+						fmt.Printf("  - %s\n", topicName)
+						fmt.Printf("    Invite: %s\n", invite)
 					}
 				}
 			}

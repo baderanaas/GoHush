@@ -202,6 +202,21 @@ func NewDecentralizedNode(port int, baseDir string, relayAddr string) (*Decentra
 
 	node.messageHandler = node.handleIncomingMessage
 
+	go node.CheckForOfflineMessages()
+	// Periodically check for offline messages
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-node.ctx.Done():
+				return
+			case <-ticker.C:
+				node.CheckForOfflineMessages()
+			}
+		}
+	}()
+
 	return node, nil
 }
 

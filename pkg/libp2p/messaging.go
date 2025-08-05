@@ -259,7 +259,9 @@ func (n *DecentralizedNode) getOrCreateStream(to peer.ID) (network.Stream, error
 func (n *DecentralizedNode) SendPrivateMessage(content string, to peer.ID) error {
 	s, err := n.getOrCreateStream(to)
 	if err != nil {
-		return err
+		// If we can't connect, store the message for later.
+		log.Printf("Peer %s is offline. Storing message.", to.String()[:12])
+		return n.storeOfflineMessage(content, to)
 	}
 
 	key := crypto.KeyFromPeers(n.host.ID(), to)
@@ -276,19 +278,79 @@ func (n *DecentralizedNode) SendPrivateMessage(content string, to peer.ID) error
 		delete(n.privateStreams, to)
 		n.privateStreamsMux.Unlock()
 
-		log.Printf("Stream to %s broken, retrying...", to.String()[:12])
+		log.Printf("Stream to %s broken, storing message and retrying connection later.", to.String()[:12])
 
-		// Attempt to get a new stream and resend.
-		newStream, err := n.getOrCreateStream(to)
-		if err != nil {
-			return fmt.Errorf("failed to create new stream for retry: %w", err)
-		}
-
-		newEncoder := json.NewEncoder(newStream)
-		if err := newEncoder.Encode(msg); err != nil {
-			return fmt.Errorf("failed to send private message on retry: %w", err)
-		}
+		// Store the message for later delivery.
+		return n.storeOfflineMessage(content, to)
 	}
 
 	return nil
+}
+
+// storeOfflineMessage encrypts the message and stores it in the DHT.
+func (n *DecentralizedNode) storeOfflineMessage(content string, to peer.ID) error {
+	key := crypto.KeyFromPeers(n.host.ID(), to)
+	msg, err := n.createMessage(content, to.String(), key)
+	if err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
+	}
+
+	dhtKey := getOfflineMessageKey(to, msg.ID)
+	err = n.dht.PutValue(n.ctx, dhtKey, data)
+	if err != nil {
+		return fmt.Errorf("failed to store offline message in DHT: %w", err)
+	}
+
+	log.Printf("Stored message for %s in DHT with key %s", to.String()[:12], dhtKey)
+	return nil
+}
+
+// CheckForOfflineMessages queries the DHT for messages stored for the current user.
+func (n *DecentralizedNode) CheckForOfflineMessages() {
+	log.Println("Checking for offline messages...")
+	dhtKeyPrefix := "/offline/" + n.host.ID().String()
+	keysChan, err := n.dht.SearchValue(n.ctx, dhtKeyPrefix)
+	if err != nil {
+		log.Printf("Error searching for offline messages: %v", err)
+		return
+	}
+
+	for dhtKey := range keysChan {
+		data, err := n.dht.GetValue(n.ctx, string(dhtKey))
+		if err != nil {
+			log.Printf("Error getting offline message: %v", err)
+			continue
+		}
+
+		var msg ChatMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			log.Printf("Error unmarshalling offline message: %v", err)
+			continue
+		}
+
+		// Derive shared secret for decryption
+		fromPeer, err := peer.Decode(msg.From)
+		if err != nil {
+			log.Printf("Error decoding from peer: %v", err)
+			continue
+		}
+		dkey := crypto.KeyFromPeers(n.host.ID(), fromPeer)
+
+		n.messageHandler(msg, fromPeer.String(), dkey)
+
+		// After processing, remove the message from the DHT.
+		err = n.dht.PutValue(n.ctx, string(dhtKey), nil) // This is a way to "delete" it
+		if err != nil {
+			log.Printf("Error deleting offline message from DHT: %v", err)
+		}
+	}
+}
+
+func getOfflineMessageKey(to peer.ID, msgID string) string {
+	return fmt.Sprintf("/offline/%s/%s", to.String(), msgID)
 }

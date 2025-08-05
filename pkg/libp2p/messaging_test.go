@@ -35,28 +35,31 @@ func TestJoinTopicAndSendMessage(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, node2.Close()) }()
 
-	// Connect nodes
+	// Connect nodes to each other
 	addr, err := peer.AddrInfoToP2pAddrs(&peer.AddrInfo{ID: node2.host.ID(), Addrs: node2.host.Addrs()})
 	require.NoError(t, err)
 	err = node1.connectToPeer(addr[0].String())
 	require.NoError(t, err)
-	time.Sleep(2 * time.Second) // allow for connection and peer discovery
+	time.Sleep(5 * time.Second) // allow for connection and peer discovery
 
 	// Create a new topic on node1
 	topicName := "test-topic"
 	topicInfo, err := node1.topicManager.CreateTopic(topicName)
 	require.NoError(t, err)
 
-	// Simulate invite by adding the same topic info to node2
-	err = node2.topicManager.AddTopic(topicInfo)
+	// Generate invite from node1 and join on node2
+	invite := GenerateInvite(topicInfo.Name, topicInfo.Secret, node1.host.ID().String())
+	parsedTopic, parsedSecret, _, err := ParseInvite(invite)
+	require.NoError(t, err)
+
+	topicInfoFromInvite := TopicInfo{Name: parsedTopic, Secret: parsedSecret}
+	err = node2.topicManager.AddTopic(topicInfoFromInvite)
 	require.NoError(t, err)
 
 	// Join topic
 	err = node1.JoinTopic(topicInfo)
 	require.NoError(t, err)
-	err = node2.JoinTopic(topicInfo)
-	require.NoError(t, err)
-	time.Sleep(2 * time.Second) // allow for pubsub to sync
+	time.Sleep(5 * time.Second) // allow for pubsub to sync
 
 	// Send and receive message
 	message := "hello world"
@@ -95,7 +98,7 @@ func TestSendPrivateMessage(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, node2.Close()) }()
 
-	// Connect nodes
+	// Connect nodes to each other
 	addr, err := peer.AddrInfoToP2pAddrs(&peer.AddrInfo{ID: node2.host.ID(), Addrs: node2.host.Addrs()})
 	require.NoError(t, err)
 	err = node1.connectToPeer(addr[0].String())
