@@ -287,7 +287,7 @@ func (n *DecentralizedNode) SendPrivateMessage(content string, to peer.ID) error
 	return nil
 }
 
-// storeOfflineMessage encrypts the message and stores it in the DHT.
+// storeOfflineMessage encrypts the message, stores it in the DHT, and updates the recipient's message index.
 func (n *DecentralizedNode) storeOfflineMessage(content string, to peer.ID) error {
 	key := crypto.KeyFromPeers(n.host.ID(), to)
 	msg, err := n.createMessage(content, to.String(), key)
@@ -300,10 +300,36 @@ func (n *DecentralizedNode) storeOfflineMessage(content string, to peer.ID) erro
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
+	// Store the actual message
 	dhtKey := getOfflineMessageKey(to, msg.ID)
 	err = n.dht.PutValue(n.ctx, dhtKey, data)
 	if err != nil {
 		return fmt.Errorf("failed to store offline message in DHT: %w", err)
+	}
+
+	// Add the message ID to the recipient's index
+	indexKey := getOfflineIndexKey(to)
+	indexBytes, err := n.dht.GetValue(n.ctx, indexKey)
+	var msgIDs []string
+	if err == nil {
+		if err := json.Unmarshal(indexBytes, &msgIDs); err != nil {
+			log.Printf("Error unmarshalling message index for %s: %v", to.String()[:12], err)
+			// If unmarshalling fails, start with a fresh index
+			msgIDs = []string{}
+		}
+	}
+
+	msgIDs = append(msgIDs, msg.ID)
+	newIndexBytes, err := json.Marshal(msgIDs)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message index: %w", err)
+	}
+
+	err = n.dht.PutValue(n.ctx, indexKey, newIndexBytes)
+	if err != nil {
+		// If this fails, the message is stored but won't be found automatically.
+		// This is a trade-off for simplicity. A more robust system would handle this.
+		return fmt.Errorf("failed to update offline message index in DHT: %w", err)
 	}
 
 	log.Printf("Stored message for %s in DHT with key %s", to.String()[:12], dhtKey)
@@ -313,44 +339,77 @@ func (n *DecentralizedNode) storeOfflineMessage(content string, to peer.ID) erro
 // CheckForOfflineMessages queries the DHT for messages stored for the current user.
 func (n *DecentralizedNode) CheckForOfflineMessages() {
 	log.Println("Checking for offline messages...")
-	dhtKeyPrefix := "/offline/" + n.host.ID().String()
-	keysChan, err := n.dht.SearchValue(n.ctx, dhtKeyPrefix)
+	indexKey := getOfflineIndexKey(n.host.ID())
+	indexBytes, err := n.dht.GetValue(n.ctx, indexKey)
 	if err != nil {
-		log.Printf("Error searching for offline messages: %v", err)
+		// This is expected if there are no messages
 		return
 	}
 
-	for dhtKey := range keysChan {
-		data, err := n.dht.GetValue(n.ctx, string(dhtKey))
+	var msgIDs []string
+	if err := json.Unmarshal(indexBytes, &msgIDs); err != nil {
+		log.Printf("Error unmarshalling offline message index: %v", err)
+		return
+	}
+
+	if len(msgIDs) == 0 {
+		return
+	}
+
+	log.Printf("Found %d offline message(s).", len(msgIDs))
+
+	var remainingMsgIDs []string
+
+	for _, msgID := range msgIDs {
+		dhtKey := getOfflineMessageKey(n.host.ID(), msgID)
+		data, err := n.dht.GetValue(n.ctx, dhtKey)
 		if err != nil {
-			log.Printf("Error getting offline message: %v", err)
+			log.Printf("Error getting offline message %s: %v", msgID, err)
+			// Keep the message ID to retry later
+			remainingMsgIDs = append(remainingMsgIDs, msgID)
 			continue
 		}
 
 		var msg ChatMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
-			log.Printf("Error unmarshalling offline message: %v", err)
+			log.Printf("Error unmarshalling offline message %s: %v", msgID, err)
 			continue
 		}
 
-		// Derive shared secret for decryption
 		fromPeer, err := peer.Decode(msg.From)
 		if err != nil {
-			log.Printf("Error decoding from peer: %v", err)
+			log.Printf("Error decoding from peer for message %s: %v", msgID, err)
 			continue
 		}
 		dkey := crypto.KeyFromPeers(n.host.ID(), fromPeer)
 
 		n.messageHandler(msg, fromPeer.String(), dkey)
 
-		// After processing, remove the message from the DHT.
-		err = n.dht.PutValue(n.ctx, string(dhtKey), nil) // This is a way to "delete" it
+		// "Delete" the message from the DHT by putting a nil value.
+		// This is not guaranteed to remove it, but it's a common practice.
+		err = n.dht.PutValue(n.ctx, dhtKey, nil)
 		if err != nil {
-			log.Printf("Error deleting offline message from DHT: %v", err)
+			log.Printf("Error deleting offline message %s from DHT: %v", msgID, err)
 		}
+	}
+
+	// Update the index with any remaining messages
+	newIndexBytes, err := json.Marshal(remainingMsgIDs)
+	if err != nil {
+		log.Printf("Error marshalling remaining message index: %v", err)
+		return
+	}
+
+	err = n.dht.PutValue(n.ctx, indexKey, newIndexBytes)
+	if err != nil {
+		log.Printf("Error updating offline message index: %v", err)
 	}
 }
 
 func getOfflineMessageKey(to peer.ID, msgID string) string {
 	return fmt.Sprintf("/offline/%s/%s", to.String(), msgID)
+}
+
+func getOfflineIndexKey(to peer.ID) string {
+	return fmt.Sprintf("/offline-index/%s", to.String())
 }

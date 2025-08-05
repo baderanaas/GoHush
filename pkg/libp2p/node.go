@@ -16,7 +16,25 @@ import (
 	"github.com/libp2p/go-libp2p/core/routing"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/multiformats/go-multiaddr"
+
+	"github.com/libp2p/go-libp2p-record"
 )
+
+// allowOfflineValidator is a validator that allows storing and retrieving offline messages.
+type allowOfflineValidator struct{}
+
+// Validate validates the given record.
+func (v allowOfflineValidator) Validate(key string, value []byte) error {
+	return nil
+}
+
+// Select selects the best record for the given key.
+func (v allowOfflineValidator) Select(key string, values [][]byte) (int, error) {
+	if len(values) == 0 {
+		return -1, nil
+	}
+	return 0, nil
+}
 
 // incomingMessageHandler defines the signature for functions that process incoming messages.
 type incomingMessageHandler func(chatMsg ChatMessage, topicDisplayName string, key []byte)
@@ -153,7 +171,13 @@ func NewDecentralizedNode(port int, baseDir string, relayAddr string) (*Decentra
 		libp2p.NATPortMap(),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			var err error
-			idht, err = dht.New(ctx, h, dht.Mode(dht.ModeServer))
+			// Custom validator to allow offline message storage
+			customValidator := record.NamespacedValidator{
+				"pk":            record.PublicKeyValidator{},
+				"offline":       allowOfflineValidator{},
+				"offline-index": allowOfflineValidator{},
+			}
+			idht, err = dht.New(ctx, h, dht.Mode(dht.ModeServer), dht.Validator(customValidator))
 			return idht, err
 		}),
 	}
